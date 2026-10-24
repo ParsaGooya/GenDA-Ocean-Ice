@@ -1,7 +1,7 @@
 [workspace]
 channels = ["https://conda.anaconda.org/conda-forge"]
 name = "GenDA"
-platforms = ["linux-aarch64"]
+platforms = ["linux-aarch64", "osx-arm64"]
 version = "0.1.0"
 
 [tasks]
