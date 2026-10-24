@@ -11,3 +11,7 @@ predictions/
 unet_checkpoints/
 .ipynb_checkpoints/
 inference/.ipynb_checkpoints/
+
+# pixi environments
+.pixi/*
+!.pixi/config.toml

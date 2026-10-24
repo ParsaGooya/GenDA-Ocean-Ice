@@ -1,0 +1,10 @@
+[workspace]
+channels = ["https://conda.anaconda.org/conda-forge"]
+name = "GenDA"
+platforms = ["linux-aarch64"]
+version = "0.1.0"
+
+[tasks]
+
+[dependencies]
+python = "3.10.*"
