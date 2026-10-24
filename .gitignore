@@ -15,3 +15,9 @@ inference/.ipynb_checkpoints/
 # pixi environments
 .pixi/*
 !.pixi/config.toml
+
+
+.DS_Store
+docs/
+output/
+tmp/

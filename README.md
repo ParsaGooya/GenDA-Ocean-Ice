@@ -8,6 +8,8 @@ Experiments in generative neural data assimilation for multi-modal surface ocean
 
 Martin, S. A., Manucharyan, G. E., & Klein, P. (under review), Generative Data Assimilation for Surface Ocean State Estimation from Multi-Modal Satellite Observations, [EarthArXiv](https://doi.org/10.31223/X5ZT6N)
 
+Published version: [Martin, Manucharyan, & Klein (2025), JAMES](https://doi.org/10.1029/2025MS005063). See [project paper context](docs/references/2025MS005063.md) for saved reference notes.
+
 **The problem:** Estimate the multi-modal dynamical state of the surface ocean (sea surface height, temperature, salinity, and surface currents) from sparse satellite observations of sea surface height and temperature and low-resolution objective analysis products for sea surface height, temperature, and salinity.
 
 ![Alt text](images/osse_inputs_outputs.png)
