@@ -1,0 +1,9 @@
+[workspace]
+channels = ["https://conda.anaconda.org/conda-forge"]
+name = "HPE_ocea_ice_genDA"
+platforms = ["osx-arm64"]
+version = "0.1.0"
+
+[tasks]
+
+[dependencies]
