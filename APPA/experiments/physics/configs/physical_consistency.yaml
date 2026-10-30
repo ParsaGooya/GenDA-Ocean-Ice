@@ -1,0 +1,36 @@
+# For GT or latent dump: provide the paths of the latent dump folder.
+# For denoiser samples, path to trajectories.pt
+path: ???
+
+latent_dump_name: era5.h5  # Name of the latent dump file (used for latent dump analysis)
+
+data_split: test  # 'train', 'valid', or 'test' (for latent dump or GT)
+
+gt: false  # If latents are provided and gt is true, will analyze GT data.
+
+# For analysis of generated samples, how many samples to use per date.
+num_samples_per_date: 1
+variables:
+  - mean_sea_level_pressure
+  - u_component_of_wind
+  - v_component_of_wind
+  - temperature
+  - geopotential
+
+num_chunks: 40
+
+hardware:
+  backend: slurm
+  account: users
+  chunk:
+    cpus: 8
+    gpus: 1
+    ram: 60GB
+    time: "45:00"
+    partition: gpu
+  aggregate:
+    cpus: 8
+    gpus: 0
+    ram: 12GB
+    time: "10:00"
+    partition: cpu

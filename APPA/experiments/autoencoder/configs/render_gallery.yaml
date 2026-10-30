@@ -1,0 +1,35 @@
+trajectory_dir: ???
+
+date: 0
+channels:  # One gallery is plotted per channel
+  - 0   # t2m
+  - 1   # u10
+  - 2   # v10
+  - 5   # tp
+  - 55  # z850
+  - 67  # q700
+samples_per_date: 3
+
+cmap: jet  # null defaults to standard ones
+quantile: 0.01
+
+show_observations: true
+show_both_masks: false
+show_time_offsets: false  # If true, will show T, +a hours, +b hours, ...
+
+# In hours.
+# 0 = first step of the assimilated, even in forecasts.
+times:  # In hours
+  - 0
+  - 12
+  - 32
+  - 71
+
+hardware:
+  backend: slurm  # or async
+  account: users
+  cpus: 4
+  gpus: 1
+  ram: 32GB
+  time: "5:00"
+  partition: gpu

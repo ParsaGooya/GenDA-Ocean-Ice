@@ -13,8 +13,7 @@ unet_checkpoints/
 inference/.ipynb_checkpoints/
 
 # pixi environments
-.pixi/*
-!.pixi/config.toml
+**/.pixi/
 
 
 .DS_Store

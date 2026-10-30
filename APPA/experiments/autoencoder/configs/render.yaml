@@ -1,0 +1,47 @@
+trajectory_dir: ???
+# automatically detects based on the path
+# forecast, reanalyis, or unconditional
+render_type: null
+
+num_chunks: 8  # Number of jobs per sample to be rendered
+
+keep_frames: true
+skip_existing: false
+tex_font: false  # Requires latex installation
+
+channels:
+  - 0  # Temperature (2m)
+  - 1  # u-component (10m)
+  - 2  # v-component (10m)
+  - 5  # Tot. Precipitation
+  - 16 # Temperature (850hPa)
+  - 52 # Geopotential (500hPa)
+
+num_columns: 3  # Defaults to number of channels
+quantile: 0.01  # Color map quantile for extremas
+framerate: 8
+
+show_gt: true
+show_obs: true
+
+# auto: stations if ground variable, else satellite
+# stations: stations mask
+# satellites: satellites mask
+# all: combined stations and satellites masks
+mask_display_mode: "auto"
+
+hardware:
+  backend: slurm  # or async
+  account: users
+  render_chunk:
+    cpus: 8
+    gpus: 1
+    ram: 60GB
+    time: "6:00"
+    partition: gpu
+  encode_video:
+    cpus: 4
+    gpus: 0
+    ram: 8GB
+    time: "5:00"
+    partition: cpu

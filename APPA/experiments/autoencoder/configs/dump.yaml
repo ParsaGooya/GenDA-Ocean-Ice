@@ -1,0 +1,30 @@
+model_path: ???  # /.../id/lap
+data_path: era5
+dump_name: "era5.h5"
+
+checkpoint: last  # or best
+
+start_date: 1993-01-01
+end_date: 2021-12-31
+
+batch_size: 1
+num_chunks: 40
+
+log_every: 1000
+save_every: 1000
+
+hardware:
+  backend: slurm  # or async
+  account: users
+  latent_chunk:
+    cpus: 8
+    gpus: 1
+    ram: 60GB
+    time: "3:00:00"
+    partition: gpu
+  aggregate:
+    cpus: 16
+    gpus: 0
+    ram: 120GB
+    time: "15:00"
+    partition: cpu

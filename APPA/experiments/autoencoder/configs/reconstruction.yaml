@@ -1,0 +1,47 @@
+model_path: ???  # /path/to/appa/autoencoders/your_ae/lap
+data_path: era5
+id: valid
+
+checkpoint: last  # or best
+
+start_date: 2019-01-01
+end_date: 2019-12-31
+
+batch_size: 1
+num_chunks: 20
+delete_tmp: false  # delete tmp files after completion
+
+# Signed error histograms
+num_bins: 200
+bin_ranges:
+  2m_temperature: [-10, 10]
+  10m_u_component_of_wind: [-10, 10]
+  10m_v_component_of_wind: [-10, 10]
+  mean_sea_level_pressure: [-7, 7]
+  total_precipitation: [-4, 4]
+  sea_surface_temperature: [-20, 20]
+  temperature: [-10, 10]
+  u_component_of_wind: [-10, 10]
+  v_component_of_wind: [-10, 10]
+  geopotential: [-600, 600]
+  specific_humidity: [-5, 5]
+multipliers:
+  specific_humidity: 1000  # kg/kg to g/kg
+  total_precipitation: 1000  # m to mm
+  mean_sea_level_pressure: 0.01  # Pa to hPa
+
+hardware:
+  backend: slurm  # or async
+  account: users
+  latent_chunk:
+    cpus: 8
+    gpus: 1
+    ram: 60GB
+    time: "35:00"
+    partition: gpu
+  aggregate:
+    cpus: 4
+    gpus: 0
+    ram: 60GB
+    time: "05:00"
+    partition: cpu

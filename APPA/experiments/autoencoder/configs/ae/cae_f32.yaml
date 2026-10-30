@@ -1,0 +1,14 @@
+name: "cae_f${.resize}c${.lat_channels}"
+shape: [721, 1440]
+resize: 32
+saturation: "softclip2"
+noise_level: 0.0
+lat_channels: 64
+hid_channels: [64, 128, 256, 512, 768, 1024]
+hid_blocks: [3, 3, 3, 3, 3, 3]
+pixel_shuffle: true
+ffn_factor: 1
+dropout: 0.0
+patch_size: [1, 1]
+checkpointing: false
+identity_init: true

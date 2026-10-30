@@ -1,0 +1,26 @@
+data_path: era5
+output_path: ???
+
+start_date: 1993-01-01
+end_date: 2021-12-31
+
+batch_size: 2
+num_chunks: 8
+
+log_every: 1
+
+hardware:
+  backend: slurm  # or async
+  account: users
+  chunk:
+    cpus: 8
+    ram: 60GB
+    time: "2-00:00:00"
+    gpus: 1
+    partition: gpu
+  aggregate:
+    cpus: 8
+    ram: 60GB
+    time: "10:00"
+    partition: gpu
+    gpus: 1

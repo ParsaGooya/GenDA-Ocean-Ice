@@ -1,0 +1,75 @@
+model_path: ???
+model_target: last  # Options: best, last
+
+latent_dump_name: era5.h5  # Name of the latent dump file
+
+diffusion:
+  num_steps: 32  # Defaults to model's validation denoising steps
+  mmps_iters: 2
+  sampler:
+    type: pc
+    config:
+      delta: 0.1
+      corrections: 2
+
+assimilation_lengths: "24"
+lead_times: "72"
+
+# Whether to assimilate full (latent) states or masked (pixel) states
+observe_full_states: false
+
+# If observing masked pixel states.
+observed_variables:
+  stations:
+    enabled: true
+    low: 0
+    high: 5  # included
+  satellites:
+    enabled: true
+    low: 6
+    high: 70  # included
+masks:
+  - name: leo
+    type: satellite
+    covariance: 1e-2
+    config:
+      orbital_altitude: 800
+      inclination: 75
+      initial_phase: 0
+      obs_freq: 60
+      fov: 5
+  - name: weather11k
+    type: stations
+    covariance: 1e-4
+    config:
+      num_stations: 11k
+      num_valid_stations: 0
+
+# Samples for a given window size
+num_samples_per_date: 10
+start_dates:
+  - "2021-03-21 0h"
+  - "2021-06-21 0h"
+  - "2021-09-21 0h"
+  - "2021-12-21 0h"
+
+blanket_overlap: 12  # Overlap between blankets
+
+precision: float16  # Options: float32, float16, bfloat16, null = model training precision
+
+hardware:
+  backend: slurm
+  account: users
+  gpus_per_node: 4
+  gen:
+    cpus: 8
+    ram: 60GB
+    time: "10:00:00"
+    partition: ia
+    gpus: 1 # TODO: Support for "auto" mode that computes GPUs based on a number of blankets per GPU for scalable experiments.
+  aggregate:
+    cpus: 8
+    gpus: 0
+    ram: 60GB
+    time: "4:00"
+    partition: cpu

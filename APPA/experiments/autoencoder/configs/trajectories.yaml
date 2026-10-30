@@ -1,0 +1,12 @@
+latent_path: ???  # Path to .h5
+
+trajectory_sizes: "72"
+trajectory_dt: 1  # in hours
+
+# Samples for a given window size
+num_samples_per_date: 10
+start_dates:
+  - "2021-03-21 0h"
+  - "2021-06-21 0h"
+  - "2021-09-21 0h"
+  - "2021-12-21 0h"

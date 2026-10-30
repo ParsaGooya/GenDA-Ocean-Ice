@@ -1,0 +1,13 @@
+name: "c${.hidden_channels}_b${.hidden_blocks}"
+
+hidden_channels: 512
+hidden_blocks: 8
+mod_features: 256
+
+self_attention_hops: 3
+cross_attention_hops: 1
+
+heads: 4
+
+use_xfa: true
+checkpointing: true

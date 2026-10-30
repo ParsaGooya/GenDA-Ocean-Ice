@@ -1,0 +1,79 @@
+model_path: ???
+model_target: last  # Options: best, last
+
+latent_dump_name: era5.h5  # Name of the latent dump file
+
+diffusion:
+  num_steps: 32  # Defaults to model's validation denoising steps
+  mmps_iters: 2
+  sampler:
+    type: pc
+    config:
+      corrections: 2
+      delta: 0.1
+
+assimilation_lengths: "2"
+lead_times: "72"
+
+# If one of them is auto, will be equal to blanket_size minus the other
+preds_per_step: 12  # States to predict per AR step.
+past_window_size: auto  # Size of the sliding window of past GT/generated states
+
+# Samples for a given window size
+num_samples_per_date: 10
+start_dates:
+  - "2021-03-21 0h"
+  - "2021-06-21 0h"
+  - "2021-09-21 0h"
+  - "2021-12-21 0h"
+
+# Initialization mode.
+#   full: use full encoded latent states
+#   observations: perform partial reanalysis from observations: [X X X X obs obs | forecast forecast ...]
+#   reanalysis: load the last n states from reanalysis performed before. TODO: do reanalysis from this script automatically & shift.
+initialization: full
+
+# If observing masked pixel states first.
+observed_variables:
+  stations:
+    enabled: true
+    low: 0
+    high: 5  # included
+  satellites:
+    enabled: true
+    low: 6
+    high: 70  # included
+masks:
+  - name: leo
+    type: satellite
+    covariance: 1e-2
+    config:
+      orbital_altitude: 800
+      inclination: 75
+      initial_phase: 0
+      obs_freq: 60
+      fov: 5
+  - name: weather11k
+    type: stations
+    covariance: 1e-4
+    config:
+      num_stations: 11k
+      num_valid_stations: 0
+
+precision: float16  # Options: float32, float16, bfloat16, null = model training precision
+
+hardware:
+  backend: slurm  # or async
+  account: users
+  gen:
+    cpus: 8
+    gpus: 1
+    ram: 60GB
+    time: "1:00:00"  # Will change with the trajectory length. If max is seven days at 25min/25h -> around 3h
+    partition: gpu
+  aggregate:
+    cpus: 4
+    gpus: 0
+    ram: 60GB
+    time: "5:00"
+    partition: cpu

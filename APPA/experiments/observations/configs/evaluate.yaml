@@ -1,0 +1,54 @@
+# Path to the runs directory to be evaluated.
+# Expected: (...)/denoisers/model/lap/experiment_type/id
+runs_path: ???
+
+variables:
+  - name: 2m_temperature
+  - name: 10m_u_component_of_wind
+  - name: 10m_v_component_of_wind
+  - name: mean_sea_level_pressure
+  - name: sea_surface_temperature
+  - name: total_precipitation
+  - name: temperature
+    levels: [850]
+  - name: geopotential
+    levels: [500]
+  - name: specific_humidity
+    levels: [700]
+
+metrics:
+  - crps
+  - spread
+  - skill
+  - spread_skill_ratio
+
+# By default, all runs are evaluated.
+# Can be a list (e.g., in CLI: runs=[2_72h,12_24h])
+runs: all
+
+recompute: false
+
+split_chunks: false
+chunk_size: 60
+
+hardware:
+  backend: slurm
+  account: users
+  decode:
+    cpus: 8
+    gpus: 1
+    ram: 120GB
+    time: "20:00"
+    partition: gpu
+  metrics:  # Beware, computation can use large amounts of RAM.
+    cpus: 8
+    gpus: 0
+    ram: 32GB
+    time: "10:00"
+    partition: cpu
+  aggregate:
+    cpus: 8
+    gpus: 0
+    ram: 60GB
+    time: "10:00"
+    partition: cpu

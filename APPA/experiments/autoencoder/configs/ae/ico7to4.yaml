@@ -1,0 +1,18 @@
+name: "ico7to4_c${.latent_channels}"
+latent_channels: 1024
+
+hid_channels: [128, 512, 1024, 2048]
+heads: [2, 4, 4, 8]
+ico_divisions: [7, 6, 5, 4]
+
+self_attention_hops: null
+self_attention_blocks: [1, 2, 3, 3]
+
+use_hop_pooling: false
+pooling_area: [2, 2, 2, 2]
+
+checkpointing: true
+identity_init: false
+use_xfa: True
+
+noise_level: 0.0

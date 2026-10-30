@@ -1,0 +1,21 @@
+latent_path: ???  # /path/to/appa/autoencoders/ae/lap/latents/id/dump.h5
+
+chunk_size: 15000  # size per job
+subchunk_size: 300  # size per iteration in a job
+
+start_date: 1993-01-01
+end_date: 2021-12-31
+
+hardware:
+  backend: slurm  # or async
+  account: users
+  chunk_stats:
+    cpus: 4
+    ram: 16GB
+    time: "45:00"
+    partition: gpu
+  aggregate:
+    cpus: 4
+    ram: 32GB
+    time: "1:00:00"
+    partition: gpu

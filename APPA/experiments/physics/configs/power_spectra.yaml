@@ -1,0 +1,33 @@
+# For GT or latent dump: provide the paths of the latent dump folder.
+# For denoiser samples, path to trajectories.pt
+path: ???
+
+latent_dump_name: era5.h5  # Name of the latent dump file (used for latent dump analysis)
+
+data_split: test  # 'train', 'valid', or 'test' (for latent dump or GT)
+
+gt: false  # If latents are provided and gt is true, will analyze GT data.
+
+# Compute power spectra on standardized physical data.
+standardize: true
+
+# For analysis of generated samples, how many samples to use per date.
+num_samples_per_date: 3
+
+num_chunks: 10
+
+hardware:
+  backend: slurm
+  account: users
+  chunk:
+    cpus: 8
+    gpus: 1
+    ram: 60GB
+    time: "4:00:00"
+    partition: gpu
+  aggregate:
+    cpus: 8
+    gpus: 0
+    ram: 12GB
+    time: "10:00"
+    partition: cpu

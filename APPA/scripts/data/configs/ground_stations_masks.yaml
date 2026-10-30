@@ -1,0 +1,8 @@
+observation_model: "both"  # "11k", "5k", "both"
+
+raw_path_11k: "local/2025"
+process_path_11k: "local/11k_station_info.json"
+mask_path_11k: "experiments/observations/ground_masks/mask_11k.pt"
+raw_path_5k: "local/meta_info.json"
+process_path_5k: "local/5k_station_info.json"
+mask_path_5k: "experiments/observations/ground_masks/mask_5k.pt"
