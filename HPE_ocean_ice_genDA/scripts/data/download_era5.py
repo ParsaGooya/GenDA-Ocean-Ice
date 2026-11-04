@@ -6,8 +6,8 @@ from dawgz import job, schedule
 from functools import partial
 from omegaconf import OmegaConf
 
-from appa.config.hydra import compose
-from appa.data.const import (
+from appa2.config.hydra import compose
+from appa2.data.const import (
     CONTEXT_VARIABLES,
     ERA5_NUM_COARSENED_LEVELS,
     ERA5_NUM_TOTAL_LEVELS,
@@ -15,8 +15,8 @@ from appa.data.const import (
     ERA5_VARIABLES,
     SUB_PRESSURE_LEVELS,
 )
-from appa.data.download import download
-from appa.date import assert_date_format
+from appa2.data.download import download
+from appa2.date import assert_date_format
 
 if __name__ == "__main__":
     config = compose("configs/download_era5.yaml", overrides=sys.argv[1:])

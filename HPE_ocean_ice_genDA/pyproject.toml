@@ -1,5 +1,6 @@
 [project]
-name = "appa"
+name = "appa2"
+requires-python = ">=3.11,<3.12"
 version = "0.0.1"
 dependencies = [
   "bottleneck==1.4.0",
@@ -17,22 +18,29 @@ dependencies = [
   "torch==2.5.1",
   "tqdm==4.66.4",
   "xarray==2025.9.0",
-  "xformers==0.0.28.post3",
   "zarr==3.1.2",
 ]
 
 [project.optional-dependencies]
-all = [
+dev = [
   "cmocean==4.0.3",
-  "dawgz==1.0.4",
   "jupyterlab==4.2.2",
   "ipykernel==6.29.5",
   "matplotlib==3.9.0",
   "pre-commit==3.7.1",
   "pytest==8.2.2",
   "ruff==0.4.8",
+]
+
+gpu = [
+  "xformers==0.0.28.post3",
+  "dawgz==1.0.4",
   "wandb==0.17.1",
 ]
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
 
 [tool.ruff]
 extend-include = ["*.ipynb"]
@@ -51,4 +59,4 @@ section-order = ["future", "third-party", "first-party", "local-folder"]
 preview = true
 
 [tool.setuptools.packages.find]
-include = ["appa*"]
+include = ["appa2", "appa2.*"]

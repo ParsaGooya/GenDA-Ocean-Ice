@@ -12,18 +12,18 @@ from dawgz import after, job, schedule
 from omegaconf import OmegaConf
 from pathlib import Path
 
-from appa.config import PATH_ERA5
-from appa.config.hydra import compose
-from appa.data.const import (
+from appa2.config import PATH_ERA5
+from appa2.config.hydra import compose
+from appa2.data.const import (
     CONTEXT_VARIABLES,
     ERA5_ATMOSPHERIC_VARIABLES,
     ERA5_PRESSURE_LEVELS,
     ERA5_SURFACE_VARIABLES,
     ERA5_VARIABLES,
 )
-from appa.data.dataloaders import get_dataloader
-from appa.data.datasets import ERA5Dataset
-from appa.date import split_interval
+from appa2.data.dataloaders import get_dataloader
+from appa2.data.datasets import ERA5Dataset
+from appa2.date import split_interval
 
 
 def compute_statistics(config):
@@ -35,7 +35,7 @@ def compute_statistics(config):
     time_intervals = split_interval(num_chunks, config.start_date, config.end_date)
 
     @job(
-        name="appa era5 stats (chunk)",
+        name="appa2 era5 stats (chunk)",
         array=num_chunks,
         **config.hardware.chunk,
     )
@@ -91,7 +91,7 @@ def compute_statistics(config):
 
     @after(compute_stats_chunk)
     @job(
-        name="appa era5 stats (merge)",
+        name="appa2 era5 stats (merge)",
         **config.hardware.aggregate,
     )
     def aggregate():
@@ -164,7 +164,7 @@ def compute_statistics(config):
 
     schedule(
         aggregate,
-        name="appa era5 stats",
+        name="appa2 era5 stats",
         export="ALL",
         account=config.hardware.account,
         backend="slurm",

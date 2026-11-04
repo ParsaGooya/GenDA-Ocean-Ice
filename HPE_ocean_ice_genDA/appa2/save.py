@@ -7,10 +7,10 @@ from omegaconf import OmegaConf, open_dict
 from pathlib import Path
 from typing import Union
 
-from appa.config.hydra import compose
-from appa.nn.cae import ConvAE, conv_ae
-from appa.nn.gae import GraphAE
-from appa.nn.triggers import skip_init
+from appa2.config.hydra import compose
+from appa2.nn.cae import ConvAE, conv_ae
+from appa2.nn.gae import GraphAE
+from appa2.nn.triggers import skip_init
 
 
 def safe_save(obj: object, path: Union[str, Path]) -> None:

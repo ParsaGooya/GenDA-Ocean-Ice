@@ -16,7 +16,7 @@ from torch import Tensor
 from torch.utils.checkpoint import checkpoint
 from typing import Optional, Sequence, Tuple, Union
 
-from appa.nn import triggers
+from appa2.nn import triggers
 
 from .layers import (
     ConvNd,

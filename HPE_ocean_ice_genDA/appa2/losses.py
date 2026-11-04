@@ -7,7 +7,7 @@ from einops import rearrange
 from torch import Tensor
 from typing import Optional
 
-from appa.data.const import (
+from appa2.data.const import (
     ERA5_ATMOSPHERIC_VARIABLES,
     ERA5_PRESSURE_LEVELS,
     ERA5_SURFACE_VARIABLES,

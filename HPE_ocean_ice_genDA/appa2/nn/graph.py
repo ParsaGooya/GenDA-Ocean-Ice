@@ -1,5 +1,7 @@
 r"""Graph network building blocks."""
 
+from __future__ import annotations
+
 import functools
 import math
 import numpy as np
@@ -7,9 +9,15 @@ import torch
 import torch.nn as nn
 import warnings
 
-with warnings.catch_warnings(action="ignore"):
-    import xformers.components.attention.core as xfa
-    import xformers.sparse as xfs
+try:
+    with warnings.catch_warnings(action="ignore"):
+        import xformers.components.attention.core as xfa
+        import xformers.sparse as xfs
+except ModuleNotFoundError as exc:
+    if exc.name != "xformers":
+        raise
+    xfa = None
+    xfs = None
 
 from einops import rearrange
 from torch import LongTensor, Tensor
@@ -17,7 +25,7 @@ from torch.nn.functional import scaled_dot_product_attention
 from torch.utils.checkpoint import checkpoint
 from typing import Optional
 
-import appa.nn.triggers as triggers
+import appa2.nn.triggers as triggers
 
 from .layers import Linear, SirenEmbedding
 
@@ -67,7 +75,7 @@ class GraphAttention(nn.Module):
         self.heads = heads
         self.chunks = chunks
         self.checkpointing = checkpointing
-        self.use_xfa = use_xfa and xfa._has_cpp_library
+        self.use_xfa = use_xfa and xfa is not None and xfa._has_cpp_library
         self.xfa_warning = False  # Flag for warning about XFA issues
 
     @staticmethod
@@ -489,7 +497,8 @@ def monkey_masked_matmul(cls, a, b, mask):
         tansp_info,
     )
 
-xfs.utils._coo_to_csr = monkey_coo_to_csr
-xfs.utils._round_nnz = monkey_round_nnz
-xfs.SparseCSRTensor._masked_matmul = classmethod(monkey_masked_matmul)
+if xfs is not None:
+    xfs.utils._coo_to_csr = monkey_coo_to_csr
+    xfs.utils._round_nnz = monkey_round_nnz
+    xfs.SparseCSRTensor._masked_matmul = classmethod(monkey_masked_matmul)
 # fmt: on

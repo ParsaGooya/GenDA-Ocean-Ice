@@ -47,5 +47,21 @@
     "appa/config/__init__.py": "Project root resolves to this folder instead of /path/to/appa.",
     "experiments/autoencoder/configs/train.yaml": "Default architecture changed from cae_f32 to ico7to5 (GraphAE).",
     "pyproject.toml": "Removed unused torch_harmonics and torchvision; declared cloudpickle and pandas directly."
+  },
+  "package_rename": {
+    "from": "appa",
+    "to": "appa2",
+    "note": "copied_files retains original source paths; destination package and Python references now use appa2."
+  },
+  "environment_update": {
+    "environments": [
+      "mac-dev",
+      "gpu-dev"
+    ],
+    "extras": [
+      "dev",
+      "gpu"
+    ],
+    "note": "GPU dependencies moved to gpu extra; xformers optional for CPU graph operations."
   }
 }

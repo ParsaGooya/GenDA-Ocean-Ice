@@ -12,11 +12,11 @@ import wandb
 from functools import partial
 from omegaconf import DictConfig, OmegaConf, open_dict
 
-import appa
+import appa2
 
-from appa.config import PATH_AE, PATH_ERA5, PATH_STAT
-from appa.config.hydra import compose
-from appa.data.const import (
+from appa2.config import PATH_AE, PATH_ERA5, PATH_STAT
+from appa2.config.hydra import compose
+from appa2.data.const import (
     CONTEXT_VARIABLES,
     DATASET_DATES_TRAINING,
     DATASET_DATES_VALIDATION,
@@ -26,15 +26,15 @@ from appa.data.const import (
     ERA5_VARIABLES,
     SUB_PRESSURE_LEVELS,
 )
-from appa.data.dataloaders import get_dataloader
-from appa.data.datasets import ERA5Dataset
-from appa.data.transforms import StandardizeTransform
-from appa.diagnostics.plots import plot_image_grid
-from appa.losses import AELoss
-from appa.optim import get_optimizer, safe_gd_step
-from appa.save import safe_load, safe_save, select_ae_architecture
+from appa2.data.dataloaders import get_dataloader
+from appa2.data.datasets import ERA5Dataset
+from appa2.data.transforms import StandardizeTransform
+from appa2.diagnostics.plots import plot_image_grid
+from appa2.losses import AELoss
+from appa2.optim import get_optimizer, safe_gd_step
+from appa2.save import safe_load, safe_save, select_ae_architecture
 
-cloudpickle.register_pickle_by_value(appa)
+cloudpickle.register_pickle_by_value(appa2)
 
 
 def train(
@@ -646,7 +646,7 @@ if __name__ == "__main__":
     dawgz.schedule(
         dawgz.job(
             f=partial(train, runid, cfg, lap_start),
-            name=f"appa ae {runid}",
+            name=f"appa2 ae {runid}",
             nodes=num_nodes,
             cpus=args.cpus_per_gpu * num_gpus,
             gpus=num_gpus,
@@ -657,7 +657,7 @@ if __name__ == "__main__":
             array=range(lap_start, lap_start + args.laps),
             array_throttle=1,
         ),
-        name=f"appa ae {runid}",
+        name=f"appa2 ae {runid}",
         backend="slurm",
         interpreter=interpreter,
         env=[

@@ -32,7 +32,7 @@ class ERA5Dataset(Dataset):
 
     Reference format of ERA5 is WeatherBench2 (ref: https://weatherbench2.readthedocs.io/en/latest/data-guide.html).
 
-    For ERA5, the path, variables, and levels can be found in the `appa.data.const` module.
+    For ERA5, the path, variables, and levels can be found in the `appa2.data.const` module.
 
     Arguments:
         path: List of path to the Zarr datasets.

@@ -8,7 +8,7 @@ from matplotlib.figure import Figure
 from torch import Tensor
 from typing import Iterable, List, Optional, Sequence, Union
 
-from appa.date import format_blanket_date
+from appa2.date import format_blanket_date
 
 
 def plot_spheres_grid(

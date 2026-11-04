@@ -7,16 +7,16 @@ import torch.nn as nn
 from torch import Tensor
 from typing import Optional, Sequence, Tuple
 
-from appa.date import get_local_time_encoding, get_year_progress_encoding
-from appa.grid import (
+from appa2.date import get_local_time_encoding, get_year_progress_encoding
+from appa2.grid import (
     create_edges,
     create_icosphere,
     create_N320,
     icosphere_nhops_edges,
     latlon_to_xyz,
 )
-from appa.nn.graph import GraphPoolAttention, GraphSelfAttention
-from appa.nn.layers import Linear, SirenEmbedding
+from appa2.nn.graph import GraphPoolAttention, GraphSelfAttention
+from appa2.nn.layers import Linear, SirenEmbedding
 
 
 class GraphAE(nn.Module):

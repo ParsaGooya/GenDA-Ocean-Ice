@@ -1,9 +1,33 @@
 [workspace]
 channels = ["https://conda.anaconda.org/conda-forge"]
-name = "HPE_ocea_ice_genDA"
-platforms = ["osx-arm64"]
+name = "appa2"
+platforms = ["osx-arm64", { name = "linux-cuda", platform = "linux-64", cuda = "12.4" }]
+requires-pixi = ">=0.83"
 version = "0.1.0"
 
 [tasks]
 
 [dependencies]
+python = "3.11.*"
+pip = "*"
+
+[feature.mac-dev]
+# Both platforms permit host-side PyPI metadata builds when locking elsewhere.
+platforms = ["osx-arm64", "linux-cuda"]
+
+[feature.mac-dev.pypi-dependencies]
+appa2 = { path = ".", editable = true, extras = ["dev"] }
+
+[feature.gpu-dev]
+# CUDA 12.4 baseline: confirm compatibility with the HPC driver.
+platforms = ["osx-arm64", "linux-cuda"]
+
+[feature.gpu-dev.target.osx-arm64.pypi-dependencies]
+appa2 = { path = ".", editable = true, extras = ["dev"] }
+
+[feature.gpu-dev.target.linux-64.pypi-dependencies]
+appa2 = { path = ".", editable = true, extras = ["dev", "gpu"] }
+
+[environments]
+mac-dev = ["mac-dev"]
+gpu-dev = ["gpu-dev"]
