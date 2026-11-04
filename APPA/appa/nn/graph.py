@@ -436,7 +436,7 @@ class GraphSelfAttention(nn.Module):
         x_res = self.norm_att(x)
 
         y = x + self.attn(x_res, x_res, self.edges)
-        y = x + self.ffn(self.norm_ffn(y))
+        y = y + self.ffn(self.norm_ffn(y)) ## PG: this could be a bug, it should be y = y + self.ffn(self.norm_ffn(y))
 
         return y
 

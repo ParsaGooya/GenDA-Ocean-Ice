@@ -1,0 +1,24 @@
+output_path: ???  # Path should end with .zarr
+
+start_date: "1993-01-01"
+end_date: "2021-12-31"
+
+time_interval: 1  # in hours
+resolution: 1440x721
+
+variables: era5  # or custom list
+pressure_levels: era5  # or era5_sub, or a custom list
+
+use_coarsened_levels: false  # only affects the chosen Google Storage bucket URL
+include_poles: true
+split_vars: false  # download separately
+chunk_size: 1  # in hours
+
+hardware:
+  backend: slurm  # or async
+  account: users
+  job:
+    cpus: 8
+    ram: 16GB
+    time: "07-00:00:00"
+    partition: shared

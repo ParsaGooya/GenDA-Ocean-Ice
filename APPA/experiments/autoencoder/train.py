@@ -73,7 +73,7 @@ def train(
     device = torch.device(f"cuda:{device_id}")
     torch.cuda.set_device(device)
 
-    dask.config.set(scheduler="synchronous")
+    dask.config.set(scheduler="synchronous") ##PG: This is often useful with PyTorch’s DataLoader: its worker processes can already load different samples in parallel, so each worker can use synchronous Dask internally. It doesn’t disable DataLoader parallelism or GPU training.
 
     torch.set_float32_matmul_precision("high")
 
