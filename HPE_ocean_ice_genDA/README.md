@@ -18,7 +18,8 @@ file inventory and extraction changes. The package is now named `appa2`, with se
 - `scripts/data/download_era5.py`, `data_stats.py`, and their configurations:
   source data download and mean/std preparation.
 - `pyproject.toml`: Python package and dependency declarations. The `dev` extra
-  includes development and plotting tools; `gpu` adds xformers, dawgz, and W&B.
+  includes development and plotting tools; `gpu` adds dawgz and W&B, plus
+  xformers on x86-64 Linux only. Castner uses the existing PyTorch graph-attention fallback.
 
 Diffusion models, diffusion experiments, sampling, latent preparation for
 diffusion, and unrelated diagnostics were excluded. Shared copied files can
@@ -31,7 +32,8 @@ model is retained because the architecture/checkpoint helpers import it.
 - `PROJECT` resolves to this folder; the original used `/path/to/appa`.
 - Removed the diffusion import and `load_denoiser` from `appa2/save.py`.
 - Removed unused torch_harmonics/torchvision dependencies and explicitly
-  declared cloudpickle/pandas. Other upstream version constraints are retained.
+  declared cloudpickle/pandas. PyTorch remains 2.5.1 on macOS; ARM Linux uses 2.6.0 for its CUDA wheel.
+  Other upstream version constraints are retained.
 
 ## Environments and configuration
 
@@ -41,10 +43,11 @@ environments that install the same local `appa2` source in editable mode:
 | Environment | Platform | Package extras | Purpose |
 |---|---|---|---|
 | `mac-dev` | Apple Silicon macOS (`osx-arm64`) | `dev` | CPU development and checks |
-| `gpu-dev` | x86-64 Linux with NVIDIA GPUs | `dev`, `gpu` | GPU development and HPC training |
+| `gpu-dev-castner` | Castner ARM Linux with GH200 GPUs | `dev`, `gpu` | GPU development and HPC training |
 
 - `pyproject.toml` defines package metadata, common dependencies, and optional
-  dependency groups. The `gpu` group adds xformers, dawgz, and W&B.
+  dependency groups. The `gpu` group adds dawgz and W&B; its legacy
+  xformers dependency is restricted to x86-64 Linux.
 - `pixi.toml` selects the platform, Python 3.11, and extras for each environment.
 - `pixi.lock`, once generated, records resolved versions for reproducibility.
 
@@ -56,7 +59,7 @@ Changing dependencies requires updating the environment.
 From the `HPE_ocean_ice_genDA` project directory:
 
 ```sh
-pixi install -e mac-dev
+pixi install --locked -e mac-dev
 pixi run -e mac-dev python -c "import appa2; print(appa2.__file__)"
 pixi run -e mac-dev python -c "import torch; print(torch.ones(3, device='cpu'))"
 ```
@@ -78,22 +81,46 @@ so use small graphs for local checks.
 
 ### HPC: GPU development and training
 
+#### Why the Castner environment exists
+
+`gpu-dev-castner` is a compatibility configuration for Castner, not a
+Castner-specific or performance-tuned software build. Castner reports an ARM
+CPU (`aarch64`) and NVIDIA GH200 GPUs. The previous GPU target used
+`linux-64` (Intel/AMD CPUs), which cannot run on this machine even though both
+systems use NVIDIA GPUs. The new target therefore selects ARM Linux packages
+and an explicitly CUDA-enabled PyTorch wheel.
+
+The name identifies the system that motivated these choices; the packages
+are standard upstream builds, not HPE-customized binaries. Other ARM Linux
+systems may use the same environment if their operating-system libraries,
+GPU hardware, and NVIDIA driver meet its requirements. It is not a generic
+environment for every HPC system, and the Linux target does not support
+Intel/AMD CPUs. Slurm partitions, account settings, GPU counts, and training
+performance still need to be configured and validated separately on Castner.
+
 After pulling the repository, enter the `HPE_ocean_ice_genDA` project directory:
 
 ```sh
-pixi install -e gpu-dev
-pixi shell -e gpu-dev
+pixi install --locked -e gpu-dev-castner
+pixi shell -e gpu-dev-castner
 ```
 
-The GPU environment assumes x86-64 Linux and declares CUDA 12.4 compatibility
-for the retained PyTorch 2.5.1 stack. Confirm compatibility with the HPC's driver
-and site module requirements before installing. Pixi does not install the
-system NVIDIA driver or Slurm.
+The `linux-castner` target uses `linux-aarch64` and a CUDA 12.6 baseline.
+ARM Linux explicitly installs the official Python 3.11 PyTorch 2.6.0+cu126
+wheel rather than a CPU-only ARM wheel. macOS retains PyTorch 2.5.1.
+The reported Castner driver, 580.65.06, supports this CUDA runtime; CUDA 13.0
+shown by `nvidia-smi` is the driver's supported level, not an installed toolkit.
+The wheel requires a compatible Linux runtime (PyTorch's ARM builds use
+manylinux 2.28 / glibc 2.28 or newer). Pixi does not install the host driver or Slurm.
+
+The pinned legacy xformers release is excluded on ARM. Graph attention already
+has a PyTorch fallback; its performance and memory usage at full resolution
+need verification on Castner before large training runs.
 
 Within a GPU allocation, check GPU access:
 
 ```sh
-pixi run -e gpu-dev python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
+pixi run -e gpu-dev-castner python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
 ```
 
 A login node without an allocated GPU may report no CUDA device; perform the
@@ -106,14 +133,14 @@ Before training, configure:
   `experiments/autoencoder/configs/train.yaml`.
 - W&B authentication and cluster resource arguments as required by your site.
 
-From the activated `gpu-dev` shell, submit training:
+From the activated `gpu-dev-castner` shell, submit training:
 
 ```sh
 cd experiments/autoencoder
 python train.py --gpus 4 ae=ico7to5
 ```
 
-This submits a Slurm job. Ensure the submitted job uses the `gpu-dev` environment
+This submits a Slurm job. Ensure the submitted job uses the `gpu-dev-castner` environment
 on the compute nodes; check the job environment against your site's Slurm setup.
 The model defaults to the graph autoencoder. Outputs go under this project's
 `autoencoders/` folder. Dataset paths and ERA5 assumptions still need adaptation
@@ -125,8 +152,8 @@ Commit source code, `pixi.toml`, `pyproject.toml`, and `pixi.lock` when generate
 Keep `.pixi/` environments local; do not commit datasets, credentials, or large
 training outputs. Git synchronizes configuration and code, not installed packages.
 
-After pulling changes, run `pixi install -e mac-dev` on the Mac or
-`pixi install -e gpu-dev` on the HPC to update that machine's environment.
+After pulling changes, run `pixi install --locked -e mac-dev` on the Mac or
+`pixi install --locked -e gpu-dev-castner` on the HPC to synchronize that machine's environment to the committed lockfile.
 Use environment names explicitly with `pixi install`, `pixi run`, and `pixi shell`.
 The manifest also has Pixi's implicit default environment, which does not install
 `appa2`; select one of the named environments above for project work.
@@ -141,14 +168,17 @@ in its `gpu` group. Use Pixi for environment/platform settings and avoid ad hoc
 Pixi resolves all environment/platform combinations when updating `pixi.lock`,
 even when installing only `mac-dev`. Both named environments therefore support
 a host-compatible variant on both platforms, so PyPI metadata builds can run
-on either machine. `gpu-dev` selects `dev` extras on macOS and `dev` plus `gpu`
-extras on Linux. Continue to use `mac-dev` on the Mac and `gpu-dev` on the HPC;
+on either machine. `gpu-dev-castner` selects `dev` extras on macOS and `dev` plus `gpu`
+extras on Linux. Continue to use `mac-dev` on the Mac and `gpu-dev-castner` on the HPC;
 this does not install Linux GPU packages on the Mac.
 
 ## Verification status
 
-Cross-platform dependency resolution succeeded and `pixi.lock` was generated.
+The lockfile targets Apple Silicon and Castner ARM Linux.
 The `mac-dev` environment installed successfully. Runtime checks passed for the
 editable `appa2` import, a PyTorch CPU tensor operation, importing graph attention
-without xformers, and creating a small 42-node icosphere. GPU installation and
-training still need verification on the HPC.
+without xformers, a small graph-attention fallback forward/backward operation,
+and creating a small 42-node icosphere. Lockfile consistency and conda-forge-only
+Conda package sources were also checked. These are local Mac and dependency
+resolution checks, not Castner runtime validation. GPU installation and
+training still need verification on Castner; the ARM wheel cannot run on the Mac.

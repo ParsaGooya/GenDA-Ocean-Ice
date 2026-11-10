@@ -1,7 +1,7 @@
 [workspace]
 channels = ["https://conda.anaconda.org/conda-forge"]
 name = "appa2"
-platforms = ["osx-arm64", { name = "linux-cuda", platform = "linux-64", cuda = "12.4" }]
+platforms = ["osx-arm64", { name = "linux-castner", platform = "linux-aarch64", cuda = "12.6" }]
 requires-pixi = ">=0.83"
 version = "0.1.0"
 
@@ -13,21 +13,26 @@ pip = "*"
 
 [feature.mac-dev]
 # Both platforms permit host-side PyPI metadata builds when locking elsewhere.
-platforms = ["osx-arm64", "linux-cuda"]
+platforms = ["osx-arm64", "linux-castner"]
 
 [feature.mac-dev.pypi-dependencies]
 appa2 = { path = ".", editable = true, extras = ["dev"] }
 
-[feature.gpu-dev]
-# CUDA 12.4 baseline: confirm compatibility with the HPC driver.
-platforms = ["osx-arm64", "linux-cuda"]
+# Pin the CUDA-enabled ARM wheel explicitly; PyPI ARM wheels may be CPU-only.
+[feature.mac-dev.target.linux-aarch64.pypi-dependencies]
+torch = { url = "https://download.pytorch.org/whl/cu126/torch-2.6.0%2Bcu126-cp311-cp311-linux_aarch64.whl" }
 
-[feature.gpu-dev.target.osx-arm64.pypi-dependencies]
+[feature.gpu-dev-castner]
+# Castner: Grace ARM CPU + Hopper GH200 GPU; CUDA 12.6 runtime.
+platforms = ["osx-arm64", "linux-castner"]
+
+[feature.gpu-dev-castner.target.osx-arm64.pypi-dependencies]
 appa2 = { path = ".", editable = true, extras = ["dev"] }
 
-[feature.gpu-dev.target.linux-64.pypi-dependencies]
+[feature.gpu-dev-castner.target.linux-aarch64.pypi-dependencies]
+torch = { url = "https://download.pytorch.org/whl/cu126/torch-2.6.0%2Bcu126-cp311-cp311-linux_aarch64.whl" }
 appa2 = { path = ".", editable = true, extras = ["dev", "gpu"] }
 
 [environments]
 mac-dev = ["mac-dev"]
-gpu-dev = ["gpu-dev"]
+gpu-dev-castner = ["gpu-dev-castner"]

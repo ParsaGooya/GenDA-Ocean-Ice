@@ -56,12 +56,12 @@
   "environment_update": {
     "environments": [
       "mac-dev",
-      "gpu-dev"
+      "gpu-dev-castner"
     ],
     "extras": [
       "dev",
       "gpu"
     ],
-    "note": "GPU dependencies moved to gpu extra; xformers optional for CPU graph operations."
+    "note": "GPU dependencies moved to gpu extra; xformers restricted to x86-64 Linux. Castner ARM Linux uses the official PyTorch 2.6.0+cu126 wheel and existing graph-attention fallback; macOS retains PyTorch 2.5.1."
   }
 }
