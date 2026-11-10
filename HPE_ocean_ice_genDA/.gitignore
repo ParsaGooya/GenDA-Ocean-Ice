@@ -3,4 +3,7 @@
 !.pixi/config.toml
 *.egg-info/
 
+__pycache__/
+*.py[cod]
+
 test.ipynb
