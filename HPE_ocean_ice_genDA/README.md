@@ -161,9 +161,9 @@ The environment pins the official Python 3.11 PyTorch **2.9.1+rocm6.4** wheel.
 This is a ROCm 6.4 build with bundled runtime libraries; it does not require
 loading a matching site module just to install it. The wheel requires glibc
 2.28 or newer. Pixi does not install the host AMD driver, Slurm, or the site's
-ROCm modules. Driver compatibility and GPU execution must still be validated
-on Protage before training. Loading a module does not change the PyTorch build
-installed in the Pixi environment.
+ROCm modules. GPU execution passed on Protage with the default `rocm/7.2.1`
+module loaded; no module switch is needed for this setup. Loading a module
+does not change the PyTorch build installed in the Pixi environment.
 
 Install from the project directory on the login node; no GPU allocation or
 ROCm module is required for this prebuilt-package installation:
@@ -173,7 +173,9 @@ pixi install --locked -e gpu-dev-protage
 pixi shell -e gpu-dev-protage
 ```
 
-Module availability can differ between login and compute nodes; that does not prevent this installation.
+The installed environment was accessible from both the compute and login
+nodes after leaving the allocation, consistent with shared project storage.
+Module availability can differ between nodes; that does not prevent installation.
 
 GPUs are not available on log-in nodes. For an interactive compute-node shell, the site-provided request is:
 
@@ -183,15 +185,15 @@ srun -N 1 -n 1 --cpus-per-task 96 -p parry --pty bash
 
 This requests one node, one task, and 96 Slurm CPUs in `parry`.  Four GPU agents were
 visible in the reported allocation, which alone does not establish exclusive
-ownership. In the allocated shell, enter the same project directory. First test
-with the shell's existing module configuration; do not switch ROCm versions
-automatically. Record the loaded modules for troubleshooting:
+ownership. In the allocated shell, enter the same project directory and keep
+the default `rocm/7.2.1` module. To display the loaded modules:
 
 ```sh
 module list
 ```
 
-Within the allocation, verify the installed backend and run a GPU operation:
+The following GPU smoke test passed within the allocation and can be rerun
+after environment or system changes:
 
 ```sh
 pixi run -e gpu-dev-protage python - <<'PYTORCH'
@@ -210,29 +212,33 @@ print("GPU forward/backward passed")
 PYTORCH
 ```
 
-If the smoke test passes, no ROCm module change is needed. If it fails, inspect
-the error and the loaded modules before changing them. The inspected shell
-initially loaded `rocm/7.2.1`; whether it interferes with the bundled runtime
-has not been tested. Only if troubleshooting or site instructions call for
-ROCm 6.4.1, replace the loaded module with:
+The successful run reported:
 
-```sh
-module swap rocm/7.2.1 rocm/6.4.1
-# If no ROCm module is loaded, use instead: module load rocm/6.4.1
+```text
+PyTorch: 2.9.1+rocm6.4
+HIP: 6.4.43484-123eb5128 CUDA: None
+GPU count: 4
+0 AMD Instinct MI300A Accelerator
+1 AMD Instinct MI300A Accelerator
+2 AMD Instinct MI300A Accelerator
+3 AMD Instinct MI300A Accelerator
+GPU forward/backward passed
 ```
 
-Rerun the smoke test after any module change. A compatible host AMD driver
-and access to the allocated GPUs are required regardless of module selection.
+`CUDA: None` is expected for this ROCm build. The run also printed
+`/opt/amdgpu/share/libdrm/amdgpu.ids: No such file or directory` four times;
+these messages did not prevent GPU detection or the forward/backward operation.
+The test enumerated all four GPUs and performed the computation on the default
+GPU. It establishes basic GPU execution with the loaded `rocm/7.2.1` module.
 
 ROCm intentionally retains PyTorch's `cuda` device names and `torch.cuda`
 interfaces. The distributed `nccl` backend uses RCCL in ROCm builds. These names
 therefore remain in the training code. The legacy xformers extra is not installed;
-graph attention uses the existing PyTorch fallback. Its memory usage and
-performance, mixed precision, and distributed training need Protage runtime checks.
+graph attention uses the existing PyTorch fallback.
 
-Similar to castner, configure dataset/statistics paths, `slurm_account`, `wandb_entity`, and W&B
-credentials as described for Castner. Activate the environment in the submission
-shell, preserving whichever module configuration passed the GPU checks:
+Configure dataset/statistics paths, `slurm_account`, `wandb_entity`, and W&B
+credentials as described for Castner. Use the activated `gpu-dev-protage`
+environment in the submission shell with the default `rocm/7.2.1` module:
 
 ```sh
 cd experiments/autoencoder
@@ -242,9 +248,9 @@ python train.py --gpus 4 --partition parry ae=ico7to5
 This submits a Slurm job rather than directly running interactive training.
 Use a separate submission shell after releasing an interactive allocation unless
 your site's workflow specifies otherwise. Ensure the submitted job inherits the
-`gpu-dev-protage` environment and the module configuration validated above. Account/partition access,
-resource flags, GPU ownership, and the launcher's site assumptions still require
-validation. Dataset paths and ERA5 assumptions require adaptation for RIOPS.
+`gpu-dev-protage` environment and the module configuration above. Set account,
+partition, and resource arguments according to site policy. Dataset paths and
+ERA5 assumptions require adaptation for RIOPS.
 
 Official build reference: [PyTorch previous versions](https://pytorch.org/get-started/previous-versions/).
 
@@ -283,8 +289,12 @@ The manifest and regenerated lockfile target Apple Silicon, Castner ARM Linux,
 and Protage x86-64 Linux. `pixi lock --check` passed after adding Protage.
 The ROCm build and its matching Triton wheel are explicitly pinned to official
 PyTorch download URLs.
-The Protage configuration has not been installed or executed on the remote HPC.
-Its GPU smoke check and distributed training remain to be run there.
+The Protage environment installed successfully on a compute node and remained
+accessible from the login node. With `rocm/7.2.1` loaded, PyTorch reported
+2.9.1+rocm6.4, HIP 6.4.43484-123eb5128, and four MI300A GPUs; the default-GPU
+forward/backward smoke test passed. No module switch was needed. These results
+cover basic GPU execution; they do not establish graph-attention performance,
+mixed-precision behavior, or multi-GPU distributed training results.
 The `mac-dev` environment installed successfully. Runtime checks passed for the
 editable `appa2` import, a PyTorch CPU tensor operation, importing graph attention
 without xformers, a small graph-attention fallback forward/backward operation,
