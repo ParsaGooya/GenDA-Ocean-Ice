@@ -91,8 +91,8 @@ import torch
 class PolarCapFilter:
     """Latitude thresholds for consecutive, cyclic longitude bands.
 
-    latitudes[i] applies to the band from longitudes[i - 1]
-    eastward to longitudes[i]. The first band wraps across
+    min_latitudes[i] applies to the band from longitude_bands[i - 1]
+    eastward to longitude_bands[i]. The first band wraps across
     the dateline.
 
     Longitude bands include their western boundary and exclude
@@ -101,11 +101,11 @@ class PolarCapFilter:
 
     def __init__(
         self,
-        longitudes: Sequence[float],
-        latitudes: Sequence[float],
+        longitude_bands: Sequence[float],
+        min_latitudes: Sequence[float],
     ):
-        longitudes = tuple(float(x) for x in longitudes)
-        latitudes = tuple(float(x) for x in latitudes)
+        longitudes = tuple(float(x) for x in longitude_bands)
+        latitudes = tuple(float(x) for x in min_latitudes)
 
         if not longitudes or len(longitudes) != len(latitudes):
             raise ValueError(
@@ -264,132 +264,204 @@ def _edges_from_faces(faces: Sequence[Sequence[int]]):
     return edges
 
 
-def create_icosphere(
-    subdivisions: int = 6,
-    polar_cap_filter: Optional[PolarCapFilter] = None,
-    return_edges: bool = True,
-):
-    r"""Create an optionally filtered icosphere.
+class Icosphere:
+    """Construct and retain a full-sphere multi-mesh graph.
 
-    Arguments:
-        subdivisions: Number of iterative subdivisions of the faces.
-        polar_cap_filter: Optional callable returning a Boolean keep mask
-            for latitude-longitude vertices in degrees.
-        return_edges: Boolean indicating whether to return directed multi-mesh edges.
-    Returns:
-        Vertices with shape (N, 2), containing latitude-longitude pairs.
-        Directed multi-mesh edges with shape (E, 2), indexed into the
-        returned vertices. Includes self-connections.
+    Attributes:
+        subdivisions: Number of face subdivisions.
+        vertices: Full-sphere latitude-longitude coordinates in degrees,
+            with shape (N, 2).
+        edges: Full-sphere directed multi-mesh edges, including
+            self-connections, with shape (E, 2).
     """
 
-    # Create initial icosahedron.
-    phi = (1 + 5**0.5) / 2
-    vertices = [
-        [-1, phi, 0],
-        [1, phi, 0],
-        [-1, -phi, 0],
-        [1, -phi, 0],
-        [0, -1, phi],
-        [0, 1, phi],
-        [0, -1, -phi],
-        [0, 1, -phi],
-        [phi, 0, -1],
-        [phi, 0, 1],
-        [-phi, 0, -1],
-        [-phi, 0, 1],
-    ]
-    vertices = [_project(v) for v in vertices]
+    def __init__(self, subdivisions: int = 6):
+        if (
+            isinstance(subdivisions, bool)
+            or not isinstance(subdivisions, int)
+            or subdivisions < 0
+        ):
+            raise ValueError("subdivisions must be a nonnegative integer.")
 
-    faces = [
-        [0, 11, 5],
-        [0, 5, 1],
-        [0, 1, 7],
-        [0, 7, 10],
-        [0, 10, 11],
-        [1, 5, 9],
-        [5, 11, 4],
-        [11, 10, 2],
-        [10, 7, 6],
-        [7, 1, 8],
-        [3, 9, 4],
-        [3, 4, 2],
-        [3, 2, 6],
-        [3, 6, 8],
-        [3, 8, 9],
-        [4, 9, 5],
-        [2, 4, 11],
-        [6, 2, 10],
-        [8, 6, 7],
-        [9, 8, 1],
-    ]
+        self.subdivisions = subdivisions
 
-    multimesh = _edges_from_faces(faces) if return_edges else None
+        phi = (1 + 5**0.5) / 2
+        vertices = [
+            [-1, phi, 0],
+            [1, phi, 0],
+            [-1, -phi, 0],
+            [1, -phi, 0],
+            [0, -1, phi],
+            [0, 1, phi],
+            [0, -1, -phi],
+            [0, 1, -phi],
+            [phi, 0, -1],
+            [phi, 0, 1],
+            [-phi, 0, -1],
+            [-phi, 0, 1],
+        ]
+        vertices = [_project(v) for v in vertices]
 
-    # Subdivide each face into four new faces.
-    for _ in range(subdivisions):
-        new_faces = []
-        new_edges = {}
+        faces = [
+            [0, 11, 5],
+            [0, 5, 1],
+            [0, 1, 7],
+            [0, 7, 10],
+            [0, 10, 11],
+            [1, 5, 9],
+            [5, 11, 4],
+            [11, 10, 2],
+            [10, 7, 6],
+            [7, 1, 8],
+            [3, 9, 4],
+            [3, 4, 2],
+            [3, 2, 6],
+            [3, 6, 8],
+            [3, 8, 9],
+            [4, 9, 5],
+            [2, 4, 11],
+            [6, 2, 10],
+            [8, 6, 7],
+            [9, 8, 1],
+        ]
 
-        for v1, v2, v3 in faces:
-            v12 = _mid_point(v1, v2, vertices, new_edges)
-            v23 = _mid_point(v2, v3, vertices, new_edges)
-            v31 = _mid_point(v3, v1, vertices, new_edges)
+        multimesh = _edges_from_faces(faces)
 
-            new_faces.extend([
-                [v1, v12, v31],
-                [v2, v23, v12],
-                [v3, v31, v23],
-                [v12, v23, v31],
-            ])
+        for _ in range(subdivisions):
+            new_faces = []
+            midpoint_cache = {}
 
-        if return_edges:
+            for v1, v2, v3 in faces:
+                v12 = _mid_point(v1, v2, vertices, midpoint_cache)
+                v23 = _mid_point(v2, v3, vertices, midpoint_cache)
+                v31 = _mid_point(v3, v1, vertices, midpoint_cache)
+
+                new_faces.extend([
+                    [v1, v12, v31],
+                    [v2, v23, v12],
+                    [v3, v31, v23],
+                    [v12, v23, v31],
+                ])
+
             for k, neighbours in _edges_from_faces(new_faces).items():
                 multimesh.setdefault(k, set()).update(neighbours)
 
-        faces = new_faces
+            faces = new_faces
 
-    if return_edges:
-        # Add self-connections.
         for k in multimesh:
             multimesh[k].add(k)
 
-    vertices = xyz_to_latlon(torch.tensor(vertices, dtype=torch.float32))
-    if return_edges:
+        self.vertices = xyz_to_latlon(
+            torch.tensor(vertices, dtype=torch.float32)
+        )
 
-        # Explicitly use dictionary keys as vertex indices.
         target = torch.cat([
             torch.full((len(neighbours),), k, dtype=torch.long)
             for k, neighbours in multimesh.items()
         ])
         source = torch.cat([
-            torch.tensor(list(neighbours), dtype=torch.long)
+            torch.tensor(sorted(neighbours), dtype=torch.long)
             for neighbours in multimesh.values()
         ])
-        edges = torch.stack([target, source], dim=-1)
+        self.edges = torch.stack([target, source], dim=-1)
 
-    if polar_cap_filter is not None:
-        keep = polar_cap_filter(vertices)
+    @property
+    def num_vertices(self) -> int:
+        """Number of vertices on the full sphere."""
+        return self.vertices.shape[0]
 
-        # Retain an edge only when both endpoints are retained.
-        if return_edges:
-            edge_keep = keep[edges].all(dim=1)
-            edges = edges[edge_keep]
+    def get_graph(
+        self,
+        polar_cap_filter: Optional[PolarCapFilter] = None,
+        return_edges: bool = True,
+    ):
+        """Return the full or filtered graph.
 
-            # Map original vertex indices to consecutive filtered indices.
-            old_to_new = torch.full(
-                (len(vertices),), -1, dtype=torch.long
+        Returned tensors are independent copies of the stored graph.
+        Filtering preserves vertex order and remaps edge indices.
+
+        Returns:
+            (vertices, edges) when return_edges=True.
+            vertices otherwise.
+        """
+        if polar_cap_filter is None:
+            if return_edges:
+                return self.vertices.clone(), self.edges.clone()
+            return self.vertices.clone()
+
+        keep = polar_cap_filter(self.vertices)
+
+        if keep.dtype != torch.bool or keep.shape != (self.num_vertices,):
+            raise ValueError(
+                "polar_cap_filter must return a Boolean mask of shape (N,)."
             )
-            old_to_new[keep] = torch.arange(
-                int(keep.sum()), dtype=torch.long
-            )
-            edges = old_to_new[edges]
 
-        vertices = vertices[keep]
-            
-    if return_edges:
+        vertices = self.vertices[keep]
+
+        if not return_edges:
+            return vertices
+
+        # Remove edges touching discarded vertices.
+        edges = self.edges[keep[self.edges].all(dim=1)]
+
+        # Translate original indices into filtered vertex indices.
+        old_to_new = torch.full_like(
+            keep, -1, dtype=torch.long
+        )
+        old_to_new[keep] = torch.arange(
+            vertices.shape[0],
+            dtype=torch.long,
+            device=keep.device,
+        )
+        edges = old_to_new[edges]
+
         return vertices, edges
-    
-    return vertices
+
+    def get_hop_radius(self, n_hops: int) -> float:
+        """Estimate an angular neighbourhood radius from full-sphere geometry.
+
+        Uses the maximum distance to the k-th nearest vertex, where k
+        approximates the number of vertices within n_hops mesh steps.
+
+        Returns:
+            Angular radius in radians.
+        """
+
+        if (
+            isinstance(n_hops, bool)
+            or not isinstance(n_hops, int)
+            or n_hops < 0
+        ):
+            raise ValueError("n_hops must be a nonnegative integer.")
+
+        if n_hops == 0:
+            return 0.0
+
+        query_xyz = latlon_to_xyz(self.vertices)
+        num_vertices = query_xyz.shape[0]
+
+        if num_vertices > 12:
+            centres = query_xyz[12:]
+            # Remove icosahedron edges (12 first) that only have 5 direct neighbors
+            # The number of neighbors in an icosphere up to n hops is 1 + 3*n*(n+1)
+            k=1 + 3 * n_hops * (n_hops + 1)
+        else:
+            # We are on ico-0
+            centres = query_xyz
+            k=1 + 2.5 * n_hops * (n_hops + 1)
+
+        if k > num_vertices:
+            raise ValueError(
+                f"n_hops={n_hops} requires {k} nearest vertices, "
+                f"but this sphere has only {num_vertices}."
+            )
+
+        query_kd = KDTree(query_xyz)
+        hop_dist, _ = query_kd.query(centres, k=[k])
+        # Take the maximum will ensure that every node is at least connected to its n_hop neighbors
+        hop_dist = float(hop_dist.max())
+        hop_arc = float(chord_to_arc(hop_dist))
+        return hop_arc
 
 
 def icosphere_nhops_edges(

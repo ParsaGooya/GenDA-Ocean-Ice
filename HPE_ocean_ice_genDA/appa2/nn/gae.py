@@ -10,10 +10,10 @@ from typing import Optional, Sequence, Tuple
 from appa2.date import get_local_time_encoding, get_year_progress_encoding
 from appa2.grid import (
     create_edges,
-    create_icosphere,
+    Icosphere,
     create_N320,
-    icosphere_nhops_edges,
     latlon_to_xyz,
+    PolarCapFilter
 )
 from appa2.nn.graph import GraphPoolAttention, GraphSelfAttention
 from appa2.nn.layers import Linear, SirenEmbedding
@@ -73,6 +73,8 @@ class GraphAE(nn.Module):
         pooling_area: Sequence[float],
         use_hop_pooling: bool = False,
         self_attention_hops: Optional[Sequence[int]] = None,
+        polar_cap_filter_longitude_bands: Optional[Sequence[float]] = None,
+        polar_cap_filter_min_latitudes: Optional[Sequence[float]] = None,
         saturation: str = "softclip2",
         saturation_bound: float = 5.0,
         noise_level: float = 0.0,
@@ -85,7 +87,18 @@ class GraphAE(nn.Module):
         super().__init__()
 
         # CREATE PROBLEM-RELATED FEATURES
-        self.icosphere_graphs = [create_icosphere(N) for N in ico_divisions]
+        # Full-sphere reference meshes.
+        icospheres = [Icosphere(N) for N in ico_divisions]
+        self.polar_cap_filter = PolarCapFilter(
+            longitude_bands=polar_cap_filter_longitude_bands,
+            min_latitudes=polar_cap_filter_min_latitudes
+        )
+
+        # Regional meshes used by attention.
+        self.icosphere_graphs = [
+            sphere.get_graph(polar_cap_filter=self.polar_cap_filter)
+            for sphere in icospheres
+        ]
         enc_grids = [create_N320(), *[vertices for vertices, edges in self.icosphere_graphs]]
 
         self.register_buffer("in_longitudes", enc_grids[0][:, -1])
@@ -105,17 +118,19 @@ class GraphAE(nn.Module):
 
             # As the distance is almost constant between points on the icosphere,
             # pooling is made using multiple of arc corresponding to area per point of the query grid.
-            grid_sizes = [create_icosphere(N, return_edges=False).shape[0] for N in ico_divisions]
             pool_args = [
-                {"max_arc": n_area * 2 * math.asin(math.sqrt(1 / grid_size))}
-                for n_area, grid_size in zip(pooling_area, grid_sizes)
+                {"max_arc": n_area * 2 * math.asin(math.sqrt(1 / sphere.num_vertices))}
+                for n_area, sphere in zip(pooling_area, icospheres)
             ]
         else:
             for n_hops in pooling_area:
                 assert (
                     n_hops % 1 == 0 and n_hops >= 1
                 ), f"must use integer area (>= 1) when using hops pooling, found {area}."
-            pool_args = pooling_area
+            pool_args =  [
+                {"max_arc": sphere.get_hop_radius(n_hops=int(n_area))}
+                for n_area, sphere in zip(pooling_area, icospheres)
+            ]
 
         pool_edges = []
         pool_q_features = []
@@ -124,10 +139,8 @@ class GraphAE(nn.Module):
         decoder_q_idx = []
 
         for key, query, pool_arg in zip(enc_grids[:-1], enc_grids[1:], pool_args):
-            if use_hop_pooling:
-                ed = icosphere_nhops_edges(query, key, n_hops=pool_arg)
-            else:
-                ed = create_edges(query, key, **pool_arg)
+
+            ed = create_edges(query, key, **pool_arg)
             pool_edges.append(ed)
 
             # Source indices for query creation
@@ -144,8 +157,14 @@ class GraphAE(nn.Module):
             sa_edges = [edges for vertices, edges in self.icosphere_graphs]
         else:
             sa_edges = [
-                icosphere_nhops_edges(vertices, vertices, n_hops=n_hops)
-                for (vertices, _), n_hops in zip(self.icosphere_graphs, self_attention_hops)
+                create_edges(
+                    vertices,
+                    vertices,
+                    max_arc=sphere.get_hop_radius(n_hops=n_hops),
+                )
+                for sphere, (vertices, _), n_hops in zip(
+                    icospheres, self.icosphere_graphs, self_attention_hops
+                )
             ]
 
         # CREATE AE ARCHITECTURE
