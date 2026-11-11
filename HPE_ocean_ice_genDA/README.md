@@ -18,8 +18,9 @@ file inventory and extraction changes. The package is now named `appa2`, with se
 - `scripts/data/download_era5.py`, `data_stats.py`, and their configurations:
   source data download and mean/std preparation.
 - `pyproject.toml`: Python package and dependency declarations. The `dev` extra
-  includes development and plotting tools; `gpu` adds dawgz and W&B, plus
-  xformers on x86-64 Linux only. Castner uses the existing PyTorch graph-attention fallback.
+  includes development and plotting tools; `gpu` adds dawgz and W&B.
+  The legacy xformers pin lives in a separate `legacy-xformers` extra that none
+  of the supported environments select. Both HPC environments use the PyTorch graph-attention fallback.
 
 Diffusion models, diffusion experiments, sampling, latent preparation for
 diffusion, and unrelated diagnostics were excluded. Shared copied files can
@@ -33,21 +34,24 @@ model is retained because the architecture/checkpoint helpers import it.
 - Removed the diffusion import and `load_denoiser` from `appa2/save.py`.
 - Removed unused torch_harmonics/torchvision dependencies and explicitly
   declared cloudpickle/pandas. PyTorch remains 2.5.1 on macOS; ARM Linux uses 2.6.0 for its CUDA wheel.
+  Protage x86-64 Linux uses PyTorch 2.9.1 for its ROCm wheel.
   Other upstream version constraints are retained.
 
 ## Environments and configuration
 
-Use Pixi >=0.83 on both machines. One `pixi.toml` defines two independent
+Use Pixi >=0.83 on all machines. One `pixi.toml` defines three independent
 environments that install the same local `appa2` source in editable mode:
 
 | Environment | Platform | Package extras | Purpose |
 |---|---|---|---|
 | `mac-dev` | Apple Silicon macOS (`osx-arm64`) | `dev` | CPU development and checks |
 | `gpu-dev-castner` | Castner ARM Linux with GH200 GPUs | `dev`, `gpu` | GPU development and HPC training |
+| `gpu-dev-protage` | Protage x86-64 Linux with MI300A GPUs | `dev`, `gpu` | ROCm GPU development and HPC training |
 
 - `pyproject.toml` defines package metadata, common dependencies, and optional
-  dependency groups. The `gpu` group adds dawgz and W&B; its legacy
-  xformers dependency is restricted to x86-64 Linux.
+  dependency groups. The `gpu` group adds dawgz and W&B. The separate
+  `legacy-xformers` extra retains the old CUDA dependency for historical use;
+  it requires a separate compatible PyTorch configuration.
 - `pixi.toml` selects the platform, Python 3.11, and extras for each environment.
 - `pixi.lock`, once generated, records resolved versions for reproducibility.
 
@@ -85,9 +89,9 @@ so use small graphs for local checks.
 
 `gpu-dev-castner` is a compatibility configuration for Castner, not a
 Castner-specific or performance-tuned software build. Castner reports an ARM
-CPU (`aarch64`) and NVIDIA GH200 GPUs. The previous GPU target used
-`linux-64` (Intel/AMD CPUs), which cannot run on this machine even though both
-systems use NVIDIA GPUs. The new target therefore selects ARM Linux packages
+CPU (`aarch64`) and NVIDIA GH200 GPUs. The GPU targets using
+`linux-64` (Intel/AMD CPUs) cannot run on this machine even though both
+systems use NVIDIA GPUs. This target therefore selects ARM Linux packages
 and an explicitly CUDA-enabled PyTorch wheel.
 
 The name identifies the system that motivated these choices; the packages
@@ -128,7 +132,6 @@ GPU check on an allocated compute node according to your HPC's procedures.
 
 Before training, configure:
 
-- Dataset and statistics paths in `appa2/config/__init__.py`.
 - `slurm_account` and `wandb_entity` in
   `experiments/autoencoder/configs/train.yaml`.
 - W&B authentication and cluster resource arguments as required by your site.
@@ -146,6 +149,105 @@ The model defaults to the graph autoencoder. Outputs go under this project's
 `autoencoders/` folder. Dataset paths and ERA5 assumptions still need adaptation
 before training on RIOPS data.
 
+#### Protage: AMD MI300A environment
+
+`gpu-dev-protage` targets Protage's x86-64 CPUs (`linux-64`) and AMD Instinct
+MI300A GPUs (`gfx942`). The inspected compute node runs RHEL 9.6 and exposes
+four GPU agents. MI300A combines CPU and GPU compute with shared HBM memory;
+CPU agents in `rocminfo` are expected alongside GPU agents. This environment
+uses standard upstream packages, not an HPE-customized or performance-tuned build.
+
+The environment pins the official Python 3.11 PyTorch **2.9.1+rocm6.4** wheel.
+This is a ROCm 6.4 build with bundled runtime libraries; it does not require
+loading a matching site module just to install it. The wheel requires glibc
+2.28 or newer. Pixi does not install the host AMD driver, Slurm, or the site's
+ROCm modules. Driver compatibility and GPU execution must still be validated
+on Protage before training. Loading a module does not change the PyTorch build
+installed in the Pixi environment.
+
+Install from the project directory on the login node; no GPU allocation or
+ROCm module is required for this prebuilt-package installation:
+
+```sh
+pixi install --locked -e gpu-dev-protage
+pixi shell -e gpu-dev-protage
+```
+
+Module availability can differ between login and compute nodes; that does not prevent this installation.
+
+GPUs are not available on log-in nodes. For an interactive compute-node shell, the site-provided request is:
+
+```sh
+srun -N 1 -n 1 --cpus-per-task 96 -p parry --pty bash
+```
+
+This requests one node, one task, and 96 Slurm CPUs in `parry`.  Four GPU agents were
+visible in the reported allocation, which alone does not establish exclusive
+ownership. In the allocated shell, enter the same project directory. First test
+with the shell's existing module configuration; do not switch ROCm versions
+automatically. Record the loaded modules for troubleshooting:
+
+```sh
+module list
+```
+
+Within the allocation, verify the installed backend and run a GPU operation:
+
+```sh
+pixi run -e gpu-dev-protage python - <<'PYTORCH'
+import torch
+print("PyTorch:", torch.__version__)
+print("HIP:", torch.version.hip, "CUDA:", torch.version.cuda)
+assert torch.version.hip is not None, "Expected a ROCm PyTorch build"
+assert torch.cuda.is_available(), "No accessible AMD GPU"
+print("GPU count:", torch.cuda.device_count())
+for i in range(torch.cuda.device_count()):
+    print(i, torch.cuda.get_device_name(i))
+x = torch.randn(256, 256, device="cuda", requires_grad=True)
+(x @ x.T).square().mean().backward()
+torch.cuda.synchronize()
+print("GPU forward/backward passed")
+PYTORCH
+```
+
+If the smoke test passes, no ROCm module change is needed. If it fails, inspect
+the error and the loaded modules before changing them. The inspected shell
+initially loaded `rocm/7.2.1`; whether it interferes with the bundled runtime
+has not been tested. Only if troubleshooting or site instructions call for
+ROCm 6.4.1, replace the loaded module with:
+
+```sh
+module swap rocm/7.2.1 rocm/6.4.1
+# If no ROCm module is loaded, use instead: module load rocm/6.4.1
+```
+
+Rerun the smoke test after any module change. A compatible host AMD driver
+and access to the allocated GPUs are required regardless of module selection.
+
+ROCm intentionally retains PyTorch's `cuda` device names and `torch.cuda`
+interfaces. The distributed `nccl` backend uses RCCL in ROCm builds. These names
+therefore remain in the training code. The legacy xformers extra is not installed;
+graph attention uses the existing PyTorch fallback. Its memory usage and
+performance, mixed precision, and distributed training need Protage runtime checks.
+
+Similar to castner, configure dataset/statistics paths, `slurm_account`, `wandb_entity`, and W&B
+credentials as described for Castner. Activate the environment in the submission
+shell, preserving whichever module configuration passed the GPU checks:
+
+```sh
+cd experiments/autoencoder
+python train.py --gpus 4 --partition parry ae=ico7to5
+```
+
+This submits a Slurm job rather than directly running interactive training.
+Use a separate submission shell after releasing an interactive allocation unless
+your site's workflow specifies otherwise. Ensure the submitted job inherits the
+`gpu-dev-protage` environment and the module configuration validated above. Account/partition access,
+resource flags, GPU ownership, and the launcher's site assumptions still require
+validation. Dataset paths and ERA5 assumptions require adaptation for RIOPS.
+
+Official build reference: [PyTorch previous versions](https://pytorch.org/get-started/previous-versions/).
+
 ### Git synchronization and dependency changes
 
 Commit source code, `pixi.toml`, `pyproject.toml`, and `pixi.lock` when generated.
@@ -153,7 +255,8 @@ Keep `.pixi/` environments local; do not commit datasets, credentials, or large
 training outputs. Git synchronizes configuration and code, not installed packages.
 
 After pulling changes, run `pixi install --locked -e mac-dev` on the Mac or
-`pixi install --locked -e gpu-dev-castner` on the HPC to synchronize that machine's environment to the committed lockfile.
+`pixi install --locked -e gpu-dev-castner` on Castner, or
+`pixi install --locked -e gpu-dev-protage` on Protage to synchronize with the committed lockfile.
 Use environment names explicitly with `pixi install`, `pixi run`, and `pixi shell`.
 The manifest also has Pixi's implicit default environment, which does not install
 `appa2`; select one of the named environments above for project work.
@@ -166,15 +269,22 @@ in its `gpu` group. Use Pixi for environment/platform settings and avoid ad hoc
 ## Cross-platform locking
 
 Pixi resolves all environment/platform combinations when updating `pixi.lock`,
-even when installing only `mac-dev`. Both named environments therefore support
-a host-compatible variant on both platforms, so PyPI metadata builds can run
-on either machine. `gpu-dev-castner` selects `dev` extras on macOS and `dev` plus `gpu`
-extras on Linux. Continue to use `mac-dev` on the Mac and `gpu-dev-castner` on the HPC;
-this does not install Linux GPU packages on the Mac.
+even when installing only one named environment. All three named environments
+include host-compatible variants for Apple Silicon, Castner ARM Linux, and
+Protage x86-64 Linux so PyPI metadata builds can run on any of those hosts.
+macOS variants use `dev` extras and PyTorch 2.5.1; ARM Linux variants use the
+CUDA 2.6.0 wheel; x86-64 Linux variants use the ROCm 2.9.1 wheel. GPU environments
+select `dev` plus `gpu` extras on Linux. Use the environment named for your
+machine; the extra variants support locking, not hardware interchangeability.
 
 ## Verification status
 
-The lockfile targets Apple Silicon and Castner ARM Linux.
+The manifest and regenerated lockfile target Apple Silicon, Castner ARM Linux,
+and Protage x86-64 Linux. `pixi lock --check` passed after adding Protage.
+The ROCm build and its matching Triton wheel are explicitly pinned to official
+PyTorch download URLs.
+The Protage configuration has not been installed or executed on the remote HPC.
+Its GPU smoke check and distributed training remain to be run there.
 The `mac-dev` environment installed successfully. Runtime checks passed for the
 editable `appa2` import, a PyTorch CPU tensor operation, importing graph attention
 without xformers, a small graph-attention fallback forward/backward operation,
