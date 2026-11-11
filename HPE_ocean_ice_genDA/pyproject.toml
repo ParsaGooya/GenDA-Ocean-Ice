@@ -19,6 +19,7 @@ dependencies = [
   "torch==2.9.1; platform_system == 'Linux' and platform_machine == 'x86_64'",
   "torch==2.6.0; platform_system == 'Linux' and platform_machine == 'aarch64'",
   "tqdm==4.66.4",
+  "netCDF4",
   "xarray==2025.9.0",
   "zarr==3.1.2",
 ]
