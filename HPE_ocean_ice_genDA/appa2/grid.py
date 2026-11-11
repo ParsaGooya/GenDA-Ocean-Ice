@@ -82,6 +82,70 @@ def chord_to_arc(chord: float) -> float:
     return 2 * math.asin(chord / 2)
 
 
+import math
+from typing import Optional, Sequence
+
+import torch
+
+
+class PolarCapFilter:
+    """Latitude thresholds for consecutive, cyclic longitude bands.
+
+    latitudes[i] applies to the band from longitudes[i - 1]
+    eastward to longitudes[i]. The first band wraps across
+    the dateline.
+
+    Longitude bands include their western boundary and exclude
+    their eastern boundary. Latitude thresholds are inclusive.
+    """
+
+    def __init__(
+        self,
+        longitudes: Sequence[float],
+        latitudes: Sequence[float],
+    ):
+        longitudes = tuple(float(x) for x in longitudes)
+        latitudes = tuple(float(x) for x in latitudes)
+
+        if not longitudes or len(longitudes) != len(latitudes):
+            raise ValueError(
+                "longitudes and latitudes must have the same nonzero length."
+            )
+
+        if not all(math.isfinite(x) for x in (*longitudes, *latitudes)):
+            raise ValueError("All coordinates must be finite.")
+
+        if not all(-180 <= x < 180 for x in longitudes):
+            raise ValueError("Longitudes must be in [-180, 180).")
+
+        if any(a >= b for a, b in zip(longitudes, longitudes[1:])):
+            raise ValueError("Longitudes must be strictly increasing.")
+
+        if not all(-90 <= x <= 90 for x in latitudes):
+            raise ValueError("Latitudes must be in [-90, 90].")
+
+        self.longitudes = longitudes
+        self.latitudes = latitudes
+
+    def __call__(self, vertices: torch.Tensor) -> torch.Tensor:
+        """Return a Boolean keep mask for vertices shaped (N, 2)."""
+        if vertices.ndim != 2 or vertices.shape[1] != 2:
+            raise ValueError("vertices must have shape (N, 2): latitude, longitude.")
+
+        lat = vertices[:, 0]
+        lon = (vertices[:, 1] + 180) % 360 - 180
+
+        boundaries = vertices.new_tensor(self.longitudes)
+        thresholds = vertices.new_tensor(self.latitudes)
+
+        # Find the band ending at the next longitude boundary.
+        # Values beyond the last boundary wrap to the first band.
+        band = torch.bucketize(lon.contiguous(), boundaries, right=True)
+        band = band % len(self.longitudes)
+
+        return lat >= thresholds[band]
+
+
 def ORG_vertices_per_lat(latitude_idx: int) -> int:
     r"""Returns the number of longitude vertices per latitude index. The first index has to be 1.
 
@@ -200,19 +264,25 @@ def _edges_from_faces(faces: Sequence[Sequence[int]]):
     return edges
 
 
-def create_icosphere(subdivisions=6):
-    r"""Creates a geodesic polyhedron by subdividing the faces of the icosahedron.
+def create_icosphere(
+    subdivisions: int = 6,
+    polar_cap_filter: Optional[PolarCapFilter] = None,
+    return_edges: bool = True,
+):
+    r"""Create an optionally filtered icosphere.
 
     Arguments:
-        subdivisions: The number of iterative subdivisions of the faces.
-
+        subdivisions: Number of iterative subdivisions of the faces.
+        polar_cap_filter: Optional callable returning a Boolean keep mask
+            for latitude-longitude vertices in degrees.
+        return_edges: Boolean indicating whether to return directed multi-mesh edges.
     Returns:
-        A tuple containing:
-        The icosphere vertices, with shape :math:`(N, 2)`. A point is a latitude-longitude pair.
-        The directed multi-mesh edges, with shape :math:`(E, 2)`.
+        Vertices with shape (N, 2), containing latitude-longitude pairs.
+        Directed multi-mesh edges with shape (E, 2), indexed into the
+        returned vertices. Includes self-connections.
     """
 
-    # Create initial icosahedron
+    # Create initial icosahedron.
     phi = (1 + 5**0.5) / 2
     vertices = [
         [-1, phi, 0],
@@ -253,41 +323,73 @@ def create_icosphere(subdivisions=6):
         [9, 8, 1],
     ]
 
-    multimesh = _edges_from_faces(faces)
+    multimesh = _edges_from_faces(faces) if return_edges else None
 
-    # Subdivide each face into 4 new faces
+    # Subdivide each face into four new faces.
     for _ in range(subdivisions):
         new_faces = []
         new_edges = {}
 
-        for face in faces:
-            v1, v2, v3 = face
-
+        for v1, v2, v3 in faces:
             v12 = _mid_point(v1, v2, vertices, new_edges)
             v23 = _mid_point(v2, v3, vertices, new_edges)
             v31 = _mid_point(v3, v1, vertices, new_edges)
 
-            new_faces.extend([[v1, v12, v31], [v2, v23, v12], [v3, v31, v23], [v12, v23, v31]])
+            new_faces.extend([
+                [v1, v12, v31],
+                [v2, v23, v12],
+                [v3, v31, v23],
+                [v12, v23, v31],
+            ])
 
-        for k, v in _edges_from_faces(new_faces).items():
-            multimesh.setdefault(k, set()).update(v)
+        if return_edges:
+            for k, neighbours in _edges_from_faces(new_faces).items():
+                multimesh.setdefault(k, set()).update(neighbours)
 
         faces = new_faces
 
-    # Add self connection
-    for k in multimesh:
-        multimesh[k].add(k)
+    if return_edges:
+        # Add self-connections.
+        for k in multimesh:
+            multimesh[k].add(k)
 
-    vertices = torch.Tensor(vertices)
-    vertices = xyz_to_latlon(vertices)
+    vertices = xyz_to_latlon(torch.tensor(vertices, dtype=torch.float32))
+    if return_edges:
 
-    target = torch.arange(len(multimesh)).repeat_interleave(
-        torch.tensor([len(nodes_idx) for nodes_idx in multimesh.values()])
-    )
-    source = torch.cat([torch.tensor(list(nodes_idx)) for nodes_idx in multimesh.values()])
-    multimesh = torch.stack([target, source], dim=-1)
+        # Explicitly use dictionary keys as vertex indices.
+        target = torch.cat([
+            torch.full((len(neighbours),), k, dtype=torch.long)
+            for k, neighbours in multimesh.items()
+        ])
+        source = torch.cat([
+            torch.tensor(list(neighbours), dtype=torch.long)
+            for neighbours in multimesh.values()
+        ])
+        edges = torch.stack([target, source], dim=-1)
 
-    return vertices, multimesh
+    if polar_cap_filter is not None:
+        keep = polar_cap_filter(vertices)
+
+        # Retain an edge only when both endpoints are retained.
+        if return_edges:
+            edge_keep = keep[edges].all(dim=1)
+            edges = edges[edge_keep]
+
+            # Map original vertex indices to consecutive filtered indices.
+            old_to_new = torch.full(
+                (len(vertices),), -1, dtype=torch.long
+            )
+            old_to_new[keep] = torch.arange(
+                int(keep.sum()), dtype=torch.long
+            )
+            edges = old_to_new[edges]
+
+        vertices = vertices[keep]
+            
+    if return_edges:
+        return vertices, edges
+    
+    return vertices
 
 
 def icosphere_nhops_edges(

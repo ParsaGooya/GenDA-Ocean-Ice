@@ -105,9 +105,10 @@ class GraphAE(nn.Module):
 
             # As the distance is almost constant between points on the icosphere,
             # pooling is made using multiple of arc corresponding to area per point of the query grid.
+            grid_sizes = [create_icosphere(N, return_edges=False).shape[0] for N in ico_divisions]
             pool_args = [
-                {"max_arc": n_area * 2 * math.asin(math.sqrt(1 / grid.shape[0]))}
-                for n_area, grid in zip(pooling_area, enc_grids[1:])
+                {"max_arc": n_area * 2 * math.asin(math.sqrt(1 / grid_size))}
+                for n_area, grid_size in zip(pooling_area, grid_sizes)
             ]
         else:
             for n_hops in pooling_area:
