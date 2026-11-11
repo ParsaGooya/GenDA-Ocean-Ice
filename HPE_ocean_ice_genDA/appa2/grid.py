@@ -5,8 +5,13 @@ import torch
 
 from scipy.spatial import KDTree
 from torch import LongTensor, Tensor
-from typing import Optional, Sequence
+from typing import Final, Optional, Sequence, Literal
 
+
+
+SUPPORTED_GRIDS = Literal["N_320", "glorys", "RIOPS"]
+POLAR_GRIDS = Literal["RIOPS"]
+GLORYS_MIN_LAT: Final[float] = 26
 
 def latlon_to_xyz(grid: Tensor) -> Tensor:
     r"""Converts a latitude-longitude grid to 3D cartesian coordinates.
@@ -82,10 +87,6 @@ def chord_to_arc(chord: float) -> float:
     return 2 * math.asin(chord / 2)
 
 
-import math
-from typing import Optional, Sequence
-
-import torch
 
 
 class PolarCapFilter:
@@ -205,6 +206,46 @@ def create_N320() -> Tensor:
 
     return coord
 
+def create_glorys(min_lat: float = -80) -> Tensor:
+    r"""Creates the GLORYS 1/12-degree grid above a minimum latitude.
+
+    Arguments:
+        min_lat: Minimum latitude to retain, between -80 and 90 degrees.
+
+    Returns:
+        Vertices with shape :math:`(N, 2)`, ordered by descending latitude.
+        Each point is a latitude-longitude pair in degrees.
+    """
+    if not -80 <= min_lat <= 90:
+        raise ValueError("min_lat must be between -80 and 90 degrees.")
+
+    lat = torch.linspace(-80, 90, 2041)
+    lat = lat[lat >= min_lat]
+    lon = torch.linspace(-180, 180 - 1 / 12, 4320)
+
+    return torch.cartesian_prod(lat, lon)
+
+def create_original_grid(
+        grid_name: SUPPORTED_GRIDS,
+        polar_cap_filter: Optional[PolarCapFilter] = None,
+    ) -> Tensor:
+
+        if grid_name == "N_320":
+            coord = create_N320()
+        elif grid_name == "glorys":
+            coord = create_glorys(GLORYS_MIN_LAT)
+        elif grid_name == "RIOPS":
+            coord = create_ORG(80)
+        else:
+            raise ValueError(
+                f"Unsupported grid {grid_name}. Supported grids are 'N_320', 'glorys', 'RIOPS'."
+            )
+
+        if polar_cap_filter is not None:
+            mask = polar_cap_filter(coord)
+            coord = coord[mask]
+
+        return coord, mask
 
 def _project(v):
     r"""Projects a vertex onto the unit sphere.

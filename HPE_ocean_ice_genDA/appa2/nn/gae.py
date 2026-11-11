@@ -12,11 +12,15 @@ from appa2.grid import (
     create_edges,
     Icosphere,
     create_N320,
+    create_original_grid,
     latlon_to_xyz,
-    PolarCapFilter
+    PolarCapFilter,
+    SUPPORTED_GRIDS,
+    POLAR_GRIDS
 )
 from appa2.nn.graph import GraphPoolAttention, GraphSelfAttention
 from appa2.nn.layers import Linear, SirenEmbedding
+
 
 
 class GraphAE(nn.Module):
@@ -75,6 +79,7 @@ class GraphAE(nn.Module):
         self_attention_hops: Optional[Sequence[int]] = None,
         polar_cap_filter_longitude_bands: Optional[Sequence[float]] = None,
         polar_cap_filter_min_latitudes: Optional[Sequence[float]] = None,
+        starting_grid: str = "N_320",
         saturation: str = "softclip2",
         saturation_bound: float = 5.0,
         noise_level: float = 0.0,
@@ -85,21 +90,41 @@ class GraphAE(nn.Module):
         **kwargs,
     ):
         super().__init__()
+        if starting_grid not in SUPPORTED_GRIDS:
+            raise ValueError(
+                f"Unsupported starting grid {starting_grid}. Supported grids are {SUPPORTED_GRIDS}."
+            )
+        if (polar_cap_filter_longitude_bands is None) != (polar_cap_filter_min_latitudes is None):
+            raise ValueError(
+                "Both polar_cap_filter_longitude_bands and polar_cap_filter_min_latitudes must be provided together."
+            )
+        if (starting_grid in POLAR_GRIDS and 
+        (polar_cap_filter_longitude_bands is None or 
+         polar_cap_filter_min_latitudes is None)):
+            raise ValueError(
+                f"Starting grid {starting_grid} requires polar cap filter parameters."
+            )
+
+        if polar_cap_filter_longitude_bands is not None and polar_cap_filter_min_latitudes is not None:
+            self.polar_cap_filter = PolarCapFilter(
+                longitude_bands=polar_cap_filter_longitude_bands,
+                min_latitudes=polar_cap_filter_min_latitudes,
+            )
+        else:
+            self.polar_cap_filter = None
 
         # CREATE PROBLEM-RELATED FEATURES
         # Full-sphere reference meshes.
         icospheres = [Icosphere(N) for N in ico_divisions]
-        self.polar_cap_filter = PolarCapFilter(
-            longitude_bands=polar_cap_filter_longitude_bands,
-            min_latitudes=polar_cap_filter_min_latitudes
-        )
 
         # Regional meshes used by attention.
         self.icosphere_graphs = [
             sphere.get_graph(polar_cap_filter=self.polar_cap_filter)
             for sphere in icospheres
         ]
-        enc_grids = [create_N320(), *[vertices for vertices, edges in self.icosphere_graphs]]
+
+        self.starting_grid = create_original_grid(starting_grid, polar_cap_filter=self.polar_cap_filter)
+        enc_grids = [self.starting_grid, *[vertices for vertices, edges in self.icosphere_graphs]]
 
         self.register_buffer("in_longitudes", enc_grids[0][:, -1])
 
