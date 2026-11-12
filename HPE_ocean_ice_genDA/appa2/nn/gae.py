@@ -123,11 +123,13 @@ class GraphAE(nn.Module):
         ]
 
         grid, mask = create_original_grid(starting_grid, polar_cap_filter=self.polar_cap_filter)
-        enc_grids = [self.starting_grid, *[vertices for vertices, edges in self.icosphere_graphs]]
 
-        self.register_buffer("in_longitudes", enc_grids[0][:, -1])
         self.register_buffer("starting_grid", grid)
         self.register_buffer("polar_mask", mask)
+
+        enc_grids = [self.starting_grid, *[vertices for vertices, edges in self.icosphere_graphs]]
+        self.register_buffer("in_longitudes", enc_grids[0][:, -1])
+
         # Create pixel to ico static edges for context
         static_pool_indices = []
         for grid in enc_grids[1:]:
@@ -151,7 +153,7 @@ class GraphAE(nn.Module):
             for n_hops in pooling_area:
                 assert (
                     n_hops % 1 == 0 and n_hops >= 1
-                ), f"must use integer area (>= 1) when using hops pooling, found {area}."
+                ), f"must use integer area (>= 1) when using hops pooling, found {n_hops}."
             pool_args =  [
                 {"max_arc": sphere.get_hop_radius(n_hops=int(n_area))}
                 for n_area, sphere in zip(pooling_area, icospheres)
@@ -166,6 +168,18 @@ class GraphAE(nn.Module):
         for key, query, pool_arg in zip(enc_grids[:-1], enc_grids[1:], pool_args):
 
             ed = create_edges(query, key, **pool_arg)
+
+            ## Check that all query nodes have at least one pooling edge given the filtering of the polar cap. This is important to avoid empty pooling for some query nodes.
+            encoder_degree = torch.bincount(ed[:, 0], minlength=len(query))
+            decoder_degree = torch.bincount(ed[:, 1], minlength=len(key))
+
+            if (encoder_degree == 0).any():
+                raise ValueError("Some encoder query nodes have no pooling edges.")
+
+            if (decoder_degree == 0).any():
+                raise ValueError("Some decoder query nodes have no pooling edges.")
+
+
             pool_edges.append(ed)
 
             # Source indices for query creation
