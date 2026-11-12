@@ -10,6 +10,8 @@ version = "0.1.0"
 [dependencies]
 python = "3.11.*"
 pip = "*"
+netcdf4 = "*"
+numpy = "==1.26.3"
 
 [feature.mac-dev]
 # All platforms permit host-side PyPI metadata builds when locking elsewhere.
