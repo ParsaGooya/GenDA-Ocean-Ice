@@ -123,7 +123,7 @@ class GraphAE(nn.Module):
             for sphere in icospheres
         ]
 
-        self.starting_grid = create_original_grid(starting_grid, polar_cap_filter=self.polar_cap_filter)
+        self.starting_grid, self.polar_mask = create_original_grid(starting_grid, polar_cap_filter=self.polar_cap_filter)
         enc_grids = [self.starting_grid, *[vertices for vertices, edges in self.icosphere_graphs]]
 
         self.register_buffer("in_longitudes", enc_grids[0][:, -1])
@@ -371,6 +371,8 @@ class GraphAE(nn.Module):
             t: Timestamp tensor, with shape :math:`(B, 4)`.
             c: Context tensor, with shape :math:`(B, N, K)`.
         """
+        x = x[..., self.polar_mask, :]
+        c = c[..., self.polar_mask, :] if c is not None else None
         z = self.encode(x, t, c)
         x = self.decode(z, t, c)
         return z, x
