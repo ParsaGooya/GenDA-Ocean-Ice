@@ -266,6 +266,52 @@ class GlorysDataset(Dataset):
         context_path=None,
     ):
         super().__init__()
+        self._validate_arguments(start_date, end_date, trajectory_size, trajectory_dt, num_samples)
+
+        self.trajectory_size = trajectory_size
+        self.trajectory_dt = trajectory_dt
+        self.transform = transform
+        self.fill_nans = fill_nans
+        self._sources = {}
+        try:
+            groups = (
+                ("surface", surface_variables, surface_path),
+                ("depth", depth_variables, depth_path),
+                ("forcing", forcing_variables, forcing_path),
+                ("context", context_variables, context_path),
+            )
+            separate_groups = self._configure_variable_groups(groups)
+
+            # Select all fallback variables together and open each distinct path once.
+            selected_sources = []
+            if self.variables_to_load:
+                selected_sources.append(
+                    self._select_source(self.variables_to_load, state_variables_path)
+                )
+            selected_sources.extend(
+                self._select_source(names, source_path) for names, source_path in separate_groups
+            )
+            fields = []
+            for name, field in (
+                (name, selected[name])
+                for selected in selected_sources
+                for name in selected.data_vars
+            ):
+                field = self._prepare_field(name, field, start_date, end_date, depths)
+                fields.append(field.to_dataset())
+
+            # Exact joins prevent silently padding mismatched sources with NaNs.
+            self.dataset = xr.merge(fields, join="exact", compat="equals")
+            if "time" not in self.dataset.dims:
+                raise ValueError("At least one selected variable must have a daily time axis.")
+            self._starts = self._build_trajectory_starts(num_samples)
+        except Exception:
+            self.close()
+            raise
+
+    @staticmethod
+    def _validate_arguments(start_date, end_date, trajectory_size, trajectory_dt, num_samples):
+        """Check daily date bounds and positive integer trajectory/sampling settings."""
         for date in (start_date, end_date):
             assert_date_format(date)
             if len(date) != 10:
@@ -282,138 +328,136 @@ class GlorysDataset(Dataset):
             ):
                 raise ValueError(f"{name} must be a positive integer.")
 
-        self.trajectory_size = trajectory_size
-        self.trajectory_dt = trajectory_dt
-        self.transform = transform
-        self.fill_nans = fill_nans
-        self._sources = {}
-        try:
+    @staticmethod
+    def _preprocess_source(ds: xr.Dataset) -> xr.Dataset:
+        """Normalize datetime64 timestamps to days without averaging field values.
 
-            def open_source(source):
-                entries = [source] if isinstance(source, (str, Path)) else list(source)
-                files = []
-                for entry in entries:
-                    entry = Path(entry)
-                    files.extend(sorted(entry.glob("*.nc")) if entry.is_dir() else [entry])
-                key = tuple(sorted({str(p.resolve()) for p in files}))
-                if not key:
-                    raise ValueError(f"No NetCDF files found in {source!r}.")
-                if key not in self._sources:
+        Static sources pass through unchanged. Subdaily timestamps become duplicate
+        days and are rejected later by field validation.
+        """
+        if "time" in ds.dims:
+            if not np.issubdtype(ds.time.dtype, np.datetime64):
+                raise ValueError("GLORYS time must decode to numpy datetime64.")
+            # Daily means may be labelled at noon rather than midnight.
+            ds = ds.assign_coords(time=ds.time.values.astype("datetime64[D]"))
+        return ds
 
-                    def preprocess(ds):
-                        if "time" in ds.dims:
-                            if not np.issubdtype(ds.time.dtype, np.datetime64):
-                                raise ValueError("GLORYS time must decode to numpy datetime64.")
-                            # Daily means may be labelled at noon rather than midnight.
-                            ds = ds.assign_coords(time=ds.time.values.astype("datetime64[D]"))
-                        return ds
+    def _open_source(self, source) -> xr.Dataset:
+        """Open NetCDF files lazily and cache by their resolved, unique file paths.
 
-                    ds = xr.open_mfdataset(
-                        list(key),
-                        combine="by_coords",
-                        preprocess=preprocess,
-                        chunks={},
-                        data_vars="minimal",
-                        coords="minimal",
-                        join="exact",
-                    )
-                    self._sources[key] = ds
-                return self._sources[key]
-
-            groups = (
-                ("surface", surface_variables, surface_path),
-                ("depth", depth_variables, depth_path),
-                ("forcing", forcing_variables, forcing_path),
-                ("context", context_variables, context_path),
+        A source can be a file, a directory of .nc files, or a sequence of either.
+        Reusing a source shares its open handles; callers release them with close().
+        """
+        entries = [source] if isinstance(source, (str, Path)) else list(source)
+        files = []
+        for entry in entries:
+            entry = Path(entry)
+            files.extend(sorted(entry.glob("*.nc")) if entry.is_dir() else [entry])
+        key = tuple(sorted({str(p.resolve()) for p in files}))
+        if not key:
+            raise ValueError(f"No NetCDF files found in {source!r}.")
+        if key not in self._sources:
+            ds = xr.open_mfdataset(
+                list(key),
+                combine="by_coords",
+                preprocess=self._preprocess_source,
+                chunks={},
+                data_vars="minimal",
+                coords="minimal",
+                join="exact",
             )
-            seen = set()
-            self.variables_to_load = []
-            separate_groups = []
-            for group, names, source_path in groups:
-                if names is None or isinstance(names, str):
-                    raise ValueError(
-                        f"{group}_variables must be a sequence; use [] to disable it."
-                    )
-                names = list(names)
-                for name in names:
-                    if not isinstance(name, str) or name in seen:
-                        raise ValueError(
-                            "Variable names must be strings unique across all groups."
-                        )
-                    seen.add(name)
-                setattr(self, f"{group}_variables", names)
-                if source_path is None:
-                    self.variables_to_load.extend(names)
-                elif names:
-                    separate_groups.append((names, source_path))
-            self.state_variables = (
-                self.surface_variables + self.depth_variables + self.forcing_variables
-            )
-            if not seen:
-                raise ValueError("Select at least one state or context variable.")
+            self._sources[key] = ds
+        return self._sources[key]
 
-            def select_source(names, source_path):
-                source = open_source(source_path)
-                missing = set(names) - set(source.data_vars)
-                if missing:
-                    raise ValueError(f"Variables {sorted(missing)} missing from its source.")
-                return source[names]
+    def _configure_variable_groups(self, groups) -> list:
+        """Validate named groups and partition their variables by source location.
 
-            # Select all fallback variables together and open each distinct path once.
-            selected_sources = []
-            if self.variables_to_load:
-                selected_sources.append(
-                    select_source(self.variables_to_load, state_variables_path)
-                )
-            selected_sources.extend(
-                select_source(names, source_path) for names, source_path in separate_groups
-            )
-            fields = []
-            for name, field in (
-                (name, selected[name])
-                for selected in selected_sources
-                for name in selected.data_vars
+        Store each group's ordered names and the combined state names. Variables
+        without separate paths populate variables_to_load; return nonempty groups
+        with separate paths. Reject duplicate names, including across groups.
+        """
+        seen = set()
+        self.variables_to_load = []
+        separate_groups = []
+        for group, names, source_path in groups:
+            if names is None or isinstance(names, str):
+                raise ValueError(f"{group}_variables must be a sequence; use [] to disable it.")
+            names = list(names)
+            for name in names:
+                if not isinstance(name, str) or name in seen:
+                    raise ValueError("Variable names must be strings unique across all groups.")
+                seen.add(name)
+            setattr(self, f"{group}_variables", names)
+            if source_path is None:
+                self.variables_to_load.extend(names)
+            elif names:
+                separate_groups.append((names, source_path))
+        self.state_variables = (
+            self.surface_variables + self.depth_variables + self.forcing_variables
+        )
+        if not seen:
+            raise ValueError("Select at least one state or context variable.")
+        return separate_groups
+
+    def _select_source(self, names: Sequence[str], source_path) -> xr.Dataset:
+        """Select requested variables lazily, raising if any are absent from the source."""
+        source = self._open_source(source_path)
+        missing = set(names) - set(source.data_vars)
+        if missing:
+            raise ValueError(f"Variables {sorted(missing)} missing from its source.")
+        return source[names]
+
+    @staticmethod
+    def _prepare_field(
+        name: str,
+        field: xr.DataArray,
+        start_date: str,
+        end_date: str,
+        depths: Optional[Sequence[float]],
+    ) -> xr.DataArray:
+        """Subset dates/depths and validate spatial dimensions and consecutive days.
+
+        Date bounds are inclusive and depth selection uses exact coordinates.
+        Static fields need no time axis. Shared grids and dates across fields are
+        checked separately when the prepared fields are merged with an exact join.
+        """
+        if "time" in field.dims:
+            field = field.sortby("time").sel(time=slice(start_date, end_date))
+        if depths is not None and "depth" in field.dims:
+            field = field.sel(depth=list(depths))
+        required = {"longitude", "latitude"}
+        if not required.issubset(field.dims):
+            raise ValueError(f"{name!r} must have longitude and latitude dimensions.")
+        extra = set(field.dims) - required - {"time", "depth"}
+        if extra:
+            raise ValueError(f"Unexpected dimensions for {name!r}: {sorted(extra)}.")
+        if "time" in field.dims:
+            field = field.sortby("time")
+            times = field.time.values.astype("datetime64[D]")
+            if (
+                not len(times)
+                or np.isnat(times).any()
+                or (len(times) > 1 and not np.all(np.diff(times) == np.timedelta64(1, "D")))
             ):
-                if "time" in field.dims:
-                    field = field.sortby("time").sel(time=slice(start_date, end_date))
-                if depths is not None and "depth" in field.dims:
-                    field = field.sel(depth=list(depths))
-                required = {"longitude", "latitude"}
-                if not required.issubset(field.dims):
-                    raise ValueError(f"{name!r} must have longitude and latitude dimensions.")
-                extra = set(field.dims) - required - {"time", "depth"}
-                if extra:
-                    raise ValueError(f"Unexpected dimensions for {name!r}: {sorted(extra)}.")
-                if "time" in field.dims:
-                    field = field.sortby("time")
-                    times = field.time.values.astype("datetime64[D]")
-                    if (
-                        not len(times)
-                        or np.isnat(times).any()
-                        or (
-                            len(times) > 1 and not np.all(np.diff(times) == np.timedelta64(1, "D"))
-                        )
-                    ):
-                        raise ValueError(f"{name!r} must have one field per consecutive day.")
-                fields.append(field.to_dataset())
+                raise ValueError(f"{name!r} must have one field per consecutive day.")
+        return field
 
-            # Exact joins prevent silently padding mismatched sources with NaNs.
-            self.dataset = xr.merge(fields, join="exact", compat="equals")
-            if "time" not in self.dataset.dims:
-                raise ValueError("At least one selected variable must have a daily time axis.")
-            available = self.dataset.sizes["time"] - (trajectory_size - 1) * trajectory_dt
-            if available < 1:
-                raise ValueError("Date range is too short for the requested trajectory.")
-            if num_samples is not None and num_samples > available:
-                raise ValueError(f"num_samples exceeds the {available} valid trajectory starts.")
-            self._starts = (
-                np.arange(available)
-                if num_samples is None
-                else np.linspace(0, available - 1, num_samples, dtype=int)
-            )
-        except Exception:
-            self.close()
-            raise
+    def _build_trajectory_starts(self, num_samples: Optional[int]) -> np.ndarray:
+        """Return all or evenly spaced complete trajectory starts on the daily axis.
+
+        Account for the within-trajectory stride without thinning the source dates.
+        Raise if no complete trajectory fits or too many starts are requested.
+        """
+        available = self.dataset.sizes["time"] - (self.trajectory_size - 1) * self.trajectory_dt
+        if available < 1:
+            raise ValueError("Date range is too short for the requested trajectory.")
+        if num_samples is not None and num_samples > available:
+            raise ValueError(f"num_samples exceeds the {available} valid trajectory starts.")
+        return (
+            np.arange(available)
+            if num_samples is None
+            else np.linspace(0, available - 1, num_samples, dtype=int)
+        )
 
     def __len__(self) -> int:
         """Number of complete trajectories, including their daily stride."""
@@ -429,6 +473,11 @@ class GlorysDataset(Dataset):
         return self._load_sub_trajectory(start, start + self.trajectory_size * self.trajectory_dt)
 
     def _dataset_to_tensor(self, sample: xr.Dataset, variables: Sequence[str]) -> Tensor:
+        """Load a selected trajectory as float32 (time, channels, longitude, latitude).
+
+        Broadcast static maps across sample dates and flatten variables/depths
+        into channels. Empty selections return batchable zero-channel tensors.
+        """
         if not variables:
             return torch.empty((
                 sample.sizes["time"],
@@ -453,6 +502,11 @@ class GlorysDataset(Dataset):
     def _load_sub_trajectory(
         self, step_start: int, step_end: int
     ) -> Tuple[Tensor, Tensor, Tensor]:
+        """Read a strided trajectory, transform state/context, then optionally fill NaNs.
+
+        Return state, context, and per-day (year, month, day, zero-hour) features.
+        step_start and step_end are positional bounds, with the end excluded.
+        """
         with dask.config.set(**{"array.slicing.split_large_chunks": True}):
             sample = self.dataset.isel(time=slice(step_start, step_end, self.trajectory_dt))
             if sample.sizes["time"] != self.trajectory_size:
