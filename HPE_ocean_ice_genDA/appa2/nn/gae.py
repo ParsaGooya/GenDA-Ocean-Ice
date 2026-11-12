@@ -5,13 +5,12 @@ import torch
 import torch.nn as nn
 
 from torch import Tensor
-from typing import Optional, Sequence, Tuple
+from typing import Optional, Sequence, Tuple, get_args
 
 from appa2.date import get_local_time_encoding, get_year_progress_encoding
 from appa2.grid import (
     create_edges,
     Icosphere,
-    create_N320,
     create_original_grid,
     latlon_to_xyz,
     PolarCapFilter,
@@ -90,7 +89,7 @@ class GraphAE(nn.Module):
         **kwargs,
     ):
         super().__init__()
-        if starting_grid not in SUPPORTED_GRIDS:
+        if starting_grid not in get_args(SUPPORTED_GRIDS):
             raise ValueError(
                 f"Unsupported starting grid {starting_grid}. Supported grids are {SUPPORTED_GRIDS}."
             )
@@ -98,9 +97,9 @@ class GraphAE(nn.Module):
             raise ValueError(
                 "Both polar_cap_filter_longitude_bands and polar_cap_filter_min_latitudes must be provided together."
             )
-        if (starting_grid in POLAR_GRIDS and 
-        (polar_cap_filter_longitude_bands is None or 
-         polar_cap_filter_min_latitudes is None)):
+        if (starting_grid in get_args(POLAR_GRIDS) and 
+         (polar_cap_filter_longitude_bands is None or 
+          polar_cap_filter_min_latitudes is None)):
             raise ValueError(
                 f"Starting grid {starting_grid} requires polar cap filter parameters."
             )
@@ -123,11 +122,12 @@ class GraphAE(nn.Module):
             for sphere in icospheres
         ]
 
-        self.starting_grid, self.polar_mask = create_original_grid(starting_grid, polar_cap_filter=self.polar_cap_filter)
+        grid, mask = create_original_grid(starting_grid, polar_cap_filter=self.polar_cap_filter)
         enc_grids = [self.starting_grid, *[vertices for vertices, edges in self.icosphere_graphs]]
 
         self.register_buffer("in_longitudes", enc_grids[0][:, -1])
-
+        self.register_buffer("starting_grid", grid)
+        self.register_buffer("polar_mask", mask)
         # Create pixel to ico static edges for context
         static_pool_indices = []
         for grid in enc_grids[1:]:
@@ -371,16 +371,16 @@ class GraphAE(nn.Module):
             t: Timestamp tensor, with shape :math:`(B, 4)`.
             c: Context tensor, with shape :math:`(B, N, K)`.
         """
-        x = x[..., self.polar_mask, :]
-        c = c[..., self.polar_mask, :] if c is not None else None
         z = self.encode(x, t, c)
         x = self.decode(z, t, c)
         return z, x
 
     def encode(self, x: Tensor, t: Tensor, c: Optional[Tensor] = None):
         # Compose context as timestamp features and given physical context
+        x = x[..., self.polar_mask, :] ##PG: If a polar cap fileter is used, the input shape will be different from the output shape. This is to ensure that the input shape is consistent with the output shape.
         t = self.encode_date(t)
         if c is not None:
+            c = c[..., self.polar_mask, :]
             hr_context = torch.cat([t, c], dim=-1)
         else:
             hr_context = t
@@ -405,6 +405,7 @@ class GraphAE(nn.Module):
         # Compose context as timestamp features and given physical context
         t = self.encode_date(t)
         if c is not None:
+            c = c[..., self.polar_mask, :]
             hr_context = torch.cat([t, c], dim=-1)
         else:
             hr_context = t
@@ -420,4 +421,9 @@ class GraphAE(nn.Module):
                 context_idx += 1
             z = d_block(z)
 
-        return z
+        output = z.new_zeros( ##PG: If a polar cap fileter is used, the output shape will be different from the input shape. This is to ensure that the output shape is consistent with the input shape. 
+            (*z.shape[:-2], self.polar_mask.numel(), z.shape[-1])
+        )
+        output[..., self.polar_mask, :] = z
+
+        return output ##PG: this used to be z. Becareful with other scripts.
