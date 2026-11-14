@@ -1,5 +1,8 @@
 r"""Datasets."""
 
+import os
+from collections import OrderedDict
+
 import dask
 import h5py
 import numpy as np
@@ -207,325 +210,290 @@ class ERA5Dataset(Dataset):
         return state, context, time
 
 
+NetCDFSource = Union[str, Path, Sequence[Union[str, Path]]]
+GlorysSample = Union[Tuple[Tensor, Tensor, Tensor], Tuple[Tensor, Tensor, Tensor, Tensor]]
+
+
 class GlorysDataset(Dataset):
-    """Daily GLORYS NetCDF data, returned as ``(state, context, time)``.
+    """Read daily variable/year NetCDF archives using a metadata-only time index.
 
-    Arguments:
-        state_variables_path: Required default source: a NetCDF file, directory
-            of .nc files, or sequence of files/directories.
-        start_date: Inclusive first day, YYYY-MM-DD.
-        end_date: Inclusive last day, YYYY-MM-DD.
-        surface_variables: Required ordered surface state names; [] disables group.
-        depth_variables: Required ordered depth state names; [] disables group.
-        forcing_variables: Required ordered forcing state names; [] disables group.
-        context_variables: Required ordered context names; [] disables context.
-        surface_path: Optional separate surface source.
-        depth_path: Optional separate depth source.
-        forcing_path: Optional separate forcing source.
-        context_path: Optional separate context source.
-            Each omitted group path falls back to state_variables_path. These
-            arguments are complete paths, not suffixes appended to the default.
-        trajectory_size: Number of daily fields in a sample.
-        trajectory_dt: Spacing between fields within a sample, in days.
-        num_samples: Number of evenly spaced valid trajectory starts, or None
-            for all starts. Does not subsample the daily time axis.
-        depths: Exact depth coordinates to select from depth-dependent fields.
-        transform: Callable taking and returning (state, context).
-        fill_nans: Replace NaNs after transformation.
+    Files may be supplied individually, as sequences, or as directories searched
+    recursively. Each group path defaults to state_variables_path. Coordinates
+    must be named time, longitude, latitude and optionally depth. Dates are
+    inclusive; every dynamic variable must cover every requested day exactly once.
+    Noon-labelled daily means are normalized to days; subdaily duplicates fail.
 
-    Groups without separate paths are selected together using variables_to_load.
-    State channel order is surface, depth, then forcing; context is separate.
-    Variable names must be unique across all four groups. All sources must already
-    share a latitude/longitude grid and daily dates; aggregate subdaily forcing
-    before using this loader.
+    Return (state, context, time), appending forcing when forcing_variables is
+    nonempty. Field tensors are float32 (time, channels, latitude, longitude).
+    State channels contain surface variables then depth variables, flattening
+    depth in variable order. Forcing retains its own native spatial grid. Context
+    shares the ocean grid. Time contains (year, month, day, hour=0).
 
-    Tensors have shape (time, channels, longitude, latitude), preserving APPA's
-    spatial order. Depth is flattened into channels, in variable order. Date
-    features retain (year, month, day, hour), with hour set to zero.
+    transform accepts/returns (state, context); forcing_transform independently
+    transforms forcing. NaNs are filled after transforms when fill_nans=True.
+    trajectory_size and trajectory_dt specify sample length and daily stride;
+    num_samples selects evenly spaced valid starts. depths selects exact levels.
+    max_open_files bounds the lazy file-handle cache separately in each worker.
+    Only selected slices are materialized, with no Dask archive graph.
     """
 
+    surface_variables: list[str]
+    depth_variables: list[str]
+    forcing_variables: list[str]
+    context_variables: list[str]
+
     def __init__(
-        self,
-        state_variables_path: Union[str, Path, Sequence[Union[str, Path]]],
-        start_date: str,
+        self, 
+        state_variables_path: NetCDFSource, 
+        start_date: str, 
         end_date: str,
-        trajectory_size: int = 1,
+        trajectory_size: int = 1, 
         trajectory_dt: int = 1,
-        num_samples: Optional[int] = None,
+        num_samples: Optional[int] = None, 
         depths: Optional[Sequence[float]] = None,
-        transform: Optional[Callable] = None,
-        fill_nans: bool = True,
-        *,
+        transform: Optional[Callable[[Tensor, Tensor], Tuple[Tensor, Tensor]]] = None,
+        fill_nans: bool = True, 
+        *, 
         surface_variables: Sequence[str],
-        depth_variables: Sequence[str],
+        depth_variables: Sequence[str], 
         forcing_variables: Sequence[str],
-        context_variables: Sequence[str],
-        surface_path=None,
-        depth_path=None,
-        forcing_path=None,
-        context_path=None,
-    ):
+        context_variables: Sequence[str], 
+        surface_path: Optional[NetCDFSource] = None,
+        depth_path: Optional[NetCDFSource] = None, 
+        forcing_path: Optional[NetCDFSource] = None,
+        context_path: Optional[NetCDFSource] = None,
+        forcing_transform: Optional[Callable[[Tensor], Tensor]] = None,
+        max_open_files: int = 16,
+    ) -> None:
+        """Scan metadata, validate coverage/grids, and construct trajectory starts."""
+
         super().__init__()
-        self._validate_arguments(start_date, end_date, trajectory_size, trajectory_dt, num_samples)
 
-        self.trajectory_size = trajectory_size
-        self.trajectory_dt = trajectory_dt
-        self.transform = transform
-        self.fill_nans = fill_nans
-        self._sources = {}
-        try:
-            groups = (
-                ("surface", surface_variables, surface_path),
-                ("depth", depth_variables, depth_path),
-                ("forcing", forcing_variables, forcing_path),
-                ("context", context_variables, context_path),
-            )
-            separate_groups = self._configure_variable_groups(groups)
-
-            # Select all fallback variables together and open each distinct path once.
-            selected_sources = []
-            if self.variables_to_load:
-                selected_sources.append(
-                    self._select_source(self.variables_to_load, state_variables_path)
-                )
-            selected_sources.extend(
-                self._select_source(names, source_path) for names, source_path in separate_groups
-            )
-            fields = []
-            for name, field in (
-                (name, selected[name])
-                for selected in selected_sources
-                for name in selected.data_vars
-            ):
-                field = self._prepare_field(name, field, start_date, end_date, depths)
-                fields.append(field.to_dataset())
-
-            # Exact joins prevent silently padding mismatched sources with NaNs.
-            self.dataset = xr.merge(fields, join="exact", compat="equals")
-            if "time" not in self.dataset.dims:
-                raise ValueError("At least one selected variable must have a daily time axis.")
-            self._starts = self._build_trajectory_starts(num_samples)
-        except Exception:
-            self.close()
-            raise
-
-    @staticmethod
-    def _validate_arguments(start_date, end_date, trajectory_size, trajectory_dt, num_samples):
-        """Check daily date bounds and positive integer trajectory/sampling settings."""
         for date in (start_date, end_date):
             assert_date_format(date)
             if len(date) != 10:
                 raise ValueError("Daily dates must have YYYY-MM-DD format.")
         if np.datetime64(start_date) > np.datetime64(end_date):
             raise ValueError("start_date must be on or before end_date.")
-        for name, value in (
-            ("trajectory_size", trajectory_size),
-            ("trajectory_dt", trajectory_dt),
-            ("num_samples", num_samples),
-        ):
-            if value is not None and (
-                isinstance(value, bool) or not isinstance(value, (int, np.integer)) or value < 1
-            ):
+        for name, value in (("trajectory_size", trajectory_size), ("trajectory_dt", trajectory_dt),
+                            ("num_samples", num_samples), ("max_open_files", max_open_files)):
+            if value is not None and (isinstance(value, bool) or not isinstance(value, (int, np.integer)) or value < 1):
                 raise ValueError(f"{name} must be a positive integer.")
-
-    @staticmethod
-    def _preprocess_source(ds: xr.Dataset) -> xr.Dataset:
-        """Normalize datetime64 timestamps to days without averaging field values.
-
-        Static sources pass through unchanged. Subdaily timestamps become duplicate
-        days and are rejected later by field validation.
-        """
-        if "time" in ds.dims:
-            if not np.issubdtype(ds.time.dtype, np.datetime64):
-                raise ValueError("GLORYS time must decode to numpy datetime64.")
-            # Daily means may be labelled at noon rather than midnight.
-            ds = ds.assign_coords(time=ds.time.values.astype("datetime64[D]"))
-        return ds
-
-    def _open_source(self, source) -> xr.Dataset:
-        """Open NetCDF files lazily and cache by their resolved, unique file paths.
-
-        A source can be a file, a directory of .nc files, or a sequence of either.
-        Reusing a source shares its open handles; callers release them with close().
-        """
-        entries = [source] if isinstance(source, (str, Path)) else list(source)
-        files = []
-        for entry in entries:
-            entry = Path(entry)
-            files.extend(sorted(entry.glob("*.nc")) if entry.is_dir() else [entry])
-        key = tuple(sorted({str(p.resolve()) for p in files}))
-        if not key:
-            raise ValueError(f"No NetCDF files found in {source!r}.")
-        if key not in self._sources:
-            ds = xr.open_mfdataset(
-                list(key),
-                combine="by_coords",
-                preprocess=self._preprocess_source,
-                chunks={},
-                data_vars="minimal",
-                coords="minimal",
-                join="exact",
-            )
-            self._sources[key] = ds
-        return self._sources[key]
-
-    def _configure_variable_groups(self, groups) -> list:
-        """Validate named groups and partition their variables by source location.
-
-        Store each group's ordered names and the combined state names. Variables
-        without separate paths populate variables_to_load; return nonempty groups
-        with separate paths. Reject duplicate names, including across groups.
-        """
-        seen = set()
-        self.variables_to_load = []
-        separate_groups = []
-        for group, names, source_path in groups:
+            
+        self.trajectory_size = trajectory_size
+        self.trajectory_dt = trajectory_dt
+        self.depths = None if depths is None else list(depths)
+        self.transform = transform
+        self.forcing_transform = forcing_transform
+        self.fill_nans = fill_nans
+        self.max_open_files = max_open_files
+        self._files: OrderedDict[str, xr.Dataset] = OrderedDict()
+        self._pid = os.getpid()
+        self.dates = np.arange(np.datetime64(start_date, 'D'),
+                               np.datetime64(end_date, 'D') + np.timedelta64(1, 'D'))
+        self.temporal_index: dict[str, dict[np.datetime64, tuple[str, int]]] = {} #VAR: Date -> (path, index)
+        self._static: dict[str, str] = {}
+        self._coords: dict[str, dict[str, np.ndarray]] = {}
+        self.variables_to_load_from_shared_path: list[str] = []
+        routes: dict[str, list[str]] = {}
+        seen: set[str] = set()
+        for group, names, source in (
+            ('surface', surface_variables, surface_path), 
+            ('depth', depth_variables, depth_path),
+            ('forcing', forcing_variables, forcing_path), 
+            ('context', context_variables, context_path),
+        ):
             if names is None or isinstance(names, str):
                 raise ValueError(f"{group}_variables must be a sequence; use [] to disable it.")
-            names = list(names)
-            for name in names:
+            ordered = list(names)
+            for name in ordered:
                 if not isinstance(name, str) or name in seen:
                     raise ValueError("Variable names must be strings unique across all groups.")
                 seen.add(name)
-            setattr(self, f"{group}_variables", names)
-            if source_path is None:
-                self.variables_to_load.extend(names)
-            elif names:
-                separate_groups.append((names, source_path))
-        self.state_variables = (
-            self.surface_variables + self.depth_variables + self.forcing_variables
-        )
+            setattr(self, f'{group}_variables', ordered)
+            if not ordered:
+                continue
+            if source is None:
+                self.variables_to_load_from_shared_path.extend(ordered)
+            for path in self._discover_files(state_variables_path if source is None else source):
+                routes.setdefault(path, []).extend(ordered)
+                
+        self.state_variables = list(surface_variables) + list(depth_variables)
         if not seen:
             raise ValueError("Select at least one state or context variable.")
-        return separate_groups
-
-    def _select_source(self, names: Sequence[str], source_path) -> xr.Dataset:
-        """Select requested variables lazily, raising if any are absent from the source."""
-        source = self._open_source(source_path)
-        missing = set(names) - set(source.data_vars)
-        if missing:
-            raise ValueError(f"Variables {sorted(missing)} missing from its source.")
-        return source[names]
-
-    @staticmethod
-    def _prepare_field(
-        name: str,
-        field: xr.DataArray,
-        start_date: str,
-        end_date: str,
-        depths: Optional[Sequence[float]],
-    ) -> xr.DataArray:
-        """Subset dates/depths and validate spatial dimensions and consecutive days.
-
-        Date bounds are inclusive and depth selection uses exact coordinates.
-        Static fields need no time axis. Shared grids and dates across fields are
-        checked separately when the prepared fields are merged with an exact join.
-        """
-        if "time" in field.dims:
-            field = field.sortby("time").sel(time=slice(start_date, end_date))
-        if depths is not None and "depth" in field.dims:
-            field = field.sel(depth=list(depths))
-        required = {"longitude", "latitude"}
-        if not required.issubset(field.dims):
-            raise ValueError(f"{name!r} must have longitude and latitude dimensions.")
-        extra = set(field.dims) - required - {"time", "depth"}
-        if extra:
-            raise ValueError(f"Unexpected dimensions for {name!r}: {sorted(extra)}.")
-        if "time" in field.dims:
-            field = field.sortby("time")
-            times = field.time.values.astype("datetime64[D]")
-            if (
-                not len(times)
-                or np.isnat(times).any()
-                or (len(times) > 1 and not np.all(np.diff(times) == np.timedelta64(1, "D")))
-            ):
-                raise ValueError(f"{name!r} must have one field per consecutive day.")
-        return field
-
-    def _build_trajectory_starts(self, num_samples: Optional[int]) -> np.ndarray:
-        """Return all or evenly spaced complete trajectory starts on the daily axis.
-
-        Account for the within-trajectory stride without thinning the source dates.
-        Raise if no complete trajectory fits or too many starts are requested.
-        """
-        available = self.dataset.sizes["time"] - (self.trajectory_size - 1) * self.trajectory_dt
+        for path, names in routes.items():
+            self._index_file(path, list(dict.fromkeys(names)))
+        for name in seen:
+            if name not in self._coords:
+                raise ValueError(f"Variable {name!r} missing from its source.")
+            if name not in self._static:
+                missing = set(self.dates) - self.temporal_index[name].keys()
+                if missing:
+                    raise ValueError(f"{name!r} missing {len(missing)} requested daily dates; first: {min(missing)}.")
+        ocean = self.state_variables + self.context_variables
+        self._ocean_coords = self._validate_grid(ocean) if ocean else self._coords[self.forcing_variables[0]]
+        self._forcing_coords = self._validate_grid(self.forcing_variables) if self.forcing_variables else self._ocean_coords
+        available = len(self.dates) - (trajectory_size - 1) * trajectory_dt
         if available < 1:
             raise ValueError("Date range is too short for the requested trajectory.")
         if num_samples is not None and num_samples > available:
             raise ValueError(f"num_samples exceeds the {available} valid trajectory starts.")
-        return (
-            np.arange(available)
-            if num_samples is None
-            else np.linspace(0, available - 1, num_samples, dtype=int)
-        )
+        self._starts = np.arange(available) if num_samples is None else np.linspace(0, available - 1, num_samples, dtype=int)
+
+    @staticmethod
+    def _discover_files(source: NetCDFSource) -> list[str]:
+        """Resolve a file/sequence or recursive variable/year directory to files."""
+        entries = [source] if isinstance(source, (str, Path)) else source
+        files: set[str] = set()
+        for entry in entries:
+            path = Path(entry)
+            files.update(str(p.resolve()) for p in (path.rglob('*.nc') if path.is_dir() else [path]))
+        if not files:
+            raise ValueError(f"No NetCDF files found in {source!r}.")
+        return sorted(files)
+
+    def _index_file(self, path: str, names: Sequence[str]) -> None:
+        """Read coordinates only; record each date's file and positional offset."""
+        with xr.open_dataset(path, chunks=None, cache=False) as ds:
+            for name in names:
+                if name not in ds.data_vars:
+                    continue
+                field = ds[name]
+                if not {'longitude', 'latitude'}.issubset(field.dims):
+                    raise ValueError(f"{name!r} must have longitude and latitude dimensions.")
+                if set(field.dims) - {'time', 'depth', 'longitude', 'latitude'}:
+                    raise ValueError(f"Unexpected dimensions for {name!r}.")
+                if self.depths is not None and 'depth' in field.dims:
+                    field = field.sel(depth=self.depths)
+                coords = {d: field[d].values.copy() for d in ('longitude', 'latitude', 'depth') if d in field.dims}
+                if name in self._coords and (
+                    coords.keys() != self._coords[name].keys() or any(
+                        not np.array_equal(v, self._coords[name][d])
+                        for d, v in coords.items()
+                    )
+                ):
+                    raise ValueError(f"Grid/depth coordinates change across files for {name!r}.")
+                self._coords[name] = coords
+                if 'time' not in field.dims:
+                    if name in self.temporal_index or name in self._static:
+                        raise ValueError(f"Ambiguous repeated static source for {name!r}.")
+                    self._static[name] = path
+                    continue
+                if name in self._static:
+                    raise ValueError(f"Mixed static and dynamic sources for {name!r}.")
+                if not np.issubdtype(field.time.dtype, np.datetime64):
+                    raise ValueError("GLORYS time must decode to numpy datetime64.")
+                dates = field.time.values.astype('datetime64[D]')
+                if np.isnat(dates).any() or len(np.unique(dates)) != len(dates):
+                    raise ValueError(f"{name!r} must have at most one field per day.")
+                index = self.temporal_index.setdefault(name, {})
+                for position, date in enumerate(dates):
+                    if self.dates[0] <= date <= self.dates[-1]:
+                        if date in index:
+                            raise ValueError(f"Duplicate date {date} for {name!r}.")
+                        index[date] = (path, position)
+
+    def _validate_grid(self, names: Sequence[str]) -> dict[str, np.ndarray]:
+        """Require identical horizontal coordinates within one output group."""
+        coords = self._coords[names[0]]
+        for name in names[1:]:
+            if any(not np.array_equal(coords[d], self._coords[name][d]) for d in ('longitude', 'latitude')):
+                raise ValueError(f"Horizontal grid mismatch for {name!r}.")
+        return coords
+
+    def _open_file(self, path: str) -> xr.Dataset:
+        """Get a process-local lazy handle, evicting least recently used files."""
+
+        ##each worker reuses its own open files, avoiding opening the file for every sample while keeping file handles separate between processes.
+        if self._pid != os.getpid():
+            self.close()
+            self._pid = os.getpid()
+        if path in self._files:
+            self._files.move_to_end(path)
+        else:
+            self._files[path] = xr.open_dataset(path, chunks=None, cache=False)
+            while len(self._files) > self.max_open_files:
+                _, old = self._files.popitem(last=False)
+                old.close()
+        return self._files[path]
+
+    def _load_variables(self, 
+                        names: Sequence[str], dates: np.ndarray,
+                        coords: dict[str, np.ndarray]) -> Tensor:
+        
+        """Read only indexed sample slices; preserve variable/depth channel order."""
+        channels: list[np.ndarray] = []
+        for name in names:
+            requests: dict[str, list[tuple[int, int]]] = {} ##PATH -> List of (output_position, position_in_file)
+            if name in self._static:
+                requests[self._static[name]] = [(i, 0) for i in range(len(dates))]
+            else:
+                for output_position, date in enumerate(dates):
+                    path, position = self.temporal_index[name][date]
+                    requests.setdefault(path, []).append((output_position, position))
+            values: Optional[np.ndarray] = None
+            for path, positions in requests.items():
+                field = self._open_file(path)[name]
+                if self.depths is not None and 'depth' in field.dims:
+                    field = field.sel(depth=self.depths)
+                if 'time' in field.dims:
+                    field = field.isel(time=[position for _, position in positions])
+                else:
+                    field = field.expand_dims(time=len(positions))
+                order = ['time'] + (['depth'] if 'depth' in field.dims else []) + ['latitude', 'longitude']
+                array = np.asarray(field.transpose(*order).load().values, dtype=np.float32)
+                array = array.reshape(len(positions), -1, len(coords['latitude']), len(coords['longitude']))
+                if values is None:
+                    values = np.empty((len(dates), *array.shape[1:]), dtype=np.float32)
+                values[[i for i, _ in positions]] = array
+            if values is None:
+                raise RuntimeError(f"No indexed values for {name!r}.")
+            channels.append(values)
+        if not channels:
+            return torch.empty((len(dates), 0, len(coords['latitude']), len(coords['longitude'])), dtype=torch.float32)
+        return torch.from_numpy(np.concatenate(channels, axis=1))
 
     def __len__(self) -> int:
-        """Number of complete trajectories, including their daily stride."""
+        """Return the number of complete trajectory starts."""
         return len(self._starts)
 
-    def __getitem__(self, idx: int) -> Tuple[Tensor, Tensor, Tensor]:
-        """Return a trajectory; adjacent unsampled start indices are one day apart."""
+    def __getitem__(self, idx: int) -> GlorysSample:
+        """Load one trajectory, with forcing appended only when configured."""
         if idx < 0:
             idx += len(self)
         if not 0 <= idx < len(self):
             raise IndexError(idx)
         start = int(self._starts[idx])
-        return self._load_sub_trajectory(start, start + self.trajectory_size * self.trajectory_dt)
-
-    def _dataset_to_tensor(self, sample: xr.Dataset, variables: Sequence[str]) -> Tensor:
-        """Load a selected trajectory as float32 (time, channels, longitude, latitude).
-
-        Broadcast static maps across sample dates and flatten variables/depths
-        into channels. Empty selections return batchable zero-channel tensors.
-        """
-        if not variables:
-            return torch.empty((
-                sample.sizes["time"],
-                0,
-                sample.sizes["longitude"],
-                sample.sizes["latitude"],
-            ))
-        # Broadcast only each selected trajectory, not static maps over the full archive.
-        fields = {}
-        for name in variables:
-            field = sample[name]
-            if "time" not in field.dims:
-                field = field.expand_dims(time=sample.time)
-            fields[name] = field
-        stacked = (
-            xr.Dataset(fields)
-            .to_stacked_array(new_dim="z_total", sample_dims=("time", "longitude", "latitude"))
-            .transpose("time", "z_total", "longitude", "latitude")
-        )
-        return torch.tensor(stacked.load().data, dtype=torch.float32)
-
-    def _load_sub_trajectory(
-        self, step_start: int, step_end: int
-    ) -> Tuple[Tensor, Tensor, Tensor]:
-        """Read a strided trajectory, transform state/context, then optionally fill NaNs.
-
-        Return state, context, and per-day (year, month, day, zero-hour) features.
-        step_start and step_end are positional bounds, with the end excluded.
-        """
-        with dask.config.set(**{"array.slicing.split_large_chunks": True}):
-            sample = self.dataset.isel(time=slice(step_start, step_end, self.trajectory_dt))
-            if sample.sizes["time"] != self.trajectory_size:
-                raise ValueError("Incomplete daily trajectory.")
-            time = torch.stack([get_date_features(date) for date in sample.time.values])
-            state = self._dataset_to_tensor(sample, self.state_variables)
-            context = self._dataset_to_tensor(sample, self.context_variables)
-            if self.transform is not None:
-                state, context = self.transform(state, context)
-            if self.fill_nans:
-                state = torch.nan_to_num(state, nan=DATA_NAN_VALUE)
-                context = torch.nan_to_num(context, nan=DATA_NAN_VALUE)
-        return state, context, time
+        dates = self.dates[start:start + self.trajectory_size * self.trajectory_dt:self.trajectory_dt]
+        state = self._load_variables(self.state_variables, dates, self._ocean_coords)
+        context = self._load_variables(self.context_variables, dates, self._ocean_coords)
+        time = torch.stack([get_date_features(date) for date in dates])
+        if self.transform is not None:
+            state, context = self.transform(state, context)
+        if self.fill_nans:
+            state = torch.nan_to_num(state, nan=DATA_NAN_VALUE)
+            context = torch.nan_to_num(context, nan=DATA_NAN_VALUE)
+        if not self.forcing_variables:
+            return state, context, time
+        forcing = self._load_variables(self.forcing_variables, dates, self._forcing_coords)
+        if self.forcing_transform is not None:
+            forcing = self.forcing_transform(forcing)
+        if self.fill_nans:
+            forcing = torch.nan_to_num(forcing, nan=DATA_NAN_VALUE)
+        return state, context, time, forcing
 
     def close(self) -> None:
-        """Close the backing NetCDF sources when the dataset is no longer in use."""
-        for source in self._sources.values():
+        """Release cached handles in this process; subsequent reads reopen files."""
+        for source in self._files.values():
             source.close()
+        self._files.clear()
 
+    def __getstate__(self) -> dict[str, object]:
+        """Exclude open handles when spawning DataLoader workers."""
+        state = self.__dict__.copy()
+        state['_files'] = OrderedDict()
+        state['_pid'] = None
+        return state
 
 class LatentBlanketDataset(Dataset):
     r"""Dataset for latent blankets.
