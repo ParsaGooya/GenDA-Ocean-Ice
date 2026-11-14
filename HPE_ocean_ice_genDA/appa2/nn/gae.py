@@ -17,9 +17,102 @@ from appa2.grid import (
     SUPPORTED_GRIDS,
     POLAR_GRIDS
 )
-from appa2.nn.graph import GraphPoolAttention, GraphSelfAttention
+from appa2.nn.graph import GraphPoolAttention, GraphSelfAttention, GraphDistancePool
 from appa2.nn.layers import Linear, SirenEmbedding
 
+
+
+class ForcingEncoder(nn.Module):
+    """Hierarchical forcing encoder, returning finest-to-coarsest features.
+
+    Attention queries use nearest features from the preceding grid plus
+    positional embeddings. Calendar embeddings are added before
+    initial pooling and after each pooling, before mesh self-attention.
+    Calendar features are sampled from the native forcing grid at each level.
+    Ocean geographic context is handled exclusively by GraphAE.
+    """
+
+    def __init__(self, grid, mask, meshes, full_mesh_sizes, in_channels,
+                 hid_channels, heads, pooling_area, method, sa_edges, self_attention_blocks,
+                 dropout=None, checkpointing=False, use_xfa=True, identity_init=False):
+        super().__init__()
+        if method not in ("distance", "attention"):
+            raise ValueError("forcing_pooling_method must be 'distance' or 'attention'.")
+        if len(pooling_area) != len(meshes):
+            raise ValueError("forcing_pooling_area must have one entry per mesh level.")
+        self.in_channels = in_channels
+        self.register_buffer("grid", grid)
+        self.register_buffer("mask", mask)
+        self.pools = nn.ModuleList()
+        self.processors = nn.ModuleList()
+        self.calendar_embeddings = nn.ModuleList([
+            SirenEmbedding(4, width, n_layers=1,
+                           checkpointing=checkpointing)
+            for width in [in_channels, *hid_channels]
+        ])
+        self.calendar_sizes = [len(g) for g in [grid, *meshes]]
+        self.register_buffer("calendar_indices", torch.cat([
+            create_edges(g, grid, neighbors=1)[:, 1]
+            for g in [grid, *meshes]
+        ]))
+        # Calendar features follow the same native-grid sampling protocol as GAE.
+        self.register_buffer("calendar_longitudes", grid[:, 1])
+        source = grid
+        source_width = in_channels
+        for level, (vertices, size, width, n_heads, area) in enumerate(zip(
+            meshes, full_mesh_sizes, hid_channels, heads, pooling_area
+        )):
+            radius = float(area) * 2 * math.asin(1 / math.sqrt(size))
+            if not math.isfinite(radius) or not 0 < radius <= math.pi:
+                raise ValueError("Forcing pooling radii must be in (0, pi].")
+            edges = create_edges(vertices, source, max_arc=radius)
+            if (torch.bincount(edges[:, 0], minlength=len(vertices)) == 0).any():
+                raise ValueError("Some forcing destinations have no neighbors; increase forcing_pooling_area.")
+            q, k = latlon_to_xyz(vertices), latlon_to_xyz(source)
+            if method == "distance":
+                pool = nn.Sequential(GraphDistancePool(q, k, edges, radius),
+                                     Linear(source_width, width, identity_init=identity_init))
+            else:
+                pool = GraphPoolAttention(
+                    q_coords=q, k_coords=k, edges=edges,
+                    in_channels=source_width, hid_channels=width,
+                    out_channels=width, heads=n_heads,
+                    k_to_q_idx=create_edges(vertices, source, neighbors=1)[:, 1],
+                    dropout=dropout, checkpointing=checkpointing, use_xfa=use_xfa,
+                    identity_init=identity_init,
+                )
+            self.pools.append(pool)
+            self.processors.append(nn.Sequential(*[
+                GraphSelfAttention(channels=width, edges=sa_edges[level],
+                                   heads=n_heads, dropout=dropout,
+                                   checkpointing=checkpointing, use_xfa=use_xfa)
+                for _ in range(self_attention_blocks[level])
+            ]))
+            source, source_width = vertices, width
+
+    def forward(self, forcing: Tensor, t: Tensor) -> list[Tensor]:
+        """Encode forcing with calendar conditioning, independent of ocean context.
+
+        forcing: (B, native_forcing_nodes, in_channels), before filtering.
+        t: (B, 4), using the same date convention as GraphAE.
+        """
+        if forcing.ndim != 3 or forcing.shape[1:] != (self.mask.numel(), self.in_channels):
+            raise ValueError(
+                f"forcing must have shape (B, {self.mask.numel()}, {self.in_channels})."
+            )
+
+        local_hour = get_local_time_encoding(t, self.calendar_longitudes)
+        year = get_year_progress_encoding(t).unsqueeze(-2).expand(-1, local_hour.shape[1], -1)
+        context = torch.cat([year, local_hour], dim=-1)
+        sampled = torch.split(context[:, self.calendar_indices, :], self.calendar_sizes, dim=1)
+        x = forcing[:, self.mask, :] + self.calendar_embeddings[0](sampled[0])
+        outputs = []
+        for level, (pool, processor) in enumerate(zip(self.pools, self.processors)):
+            x = pool(x)
+            x = x + self.calendar_embeddings[level + 1](sampled[level + 1])
+            x = processor(x)
+            outputs.append(x)
+        return outputs
 
 
 class GraphAE(nn.Module):
@@ -62,6 +155,12 @@ class GraphAE(nn.Module):
         saturation_bound: Maximal absolute value of the saturation output. Does not apply for asinh.
         dropout: Dropout rate.
         identity_init: Whether to use identity like initialisation for pooling and projection blocks.
+        forcing_grid: Optional supported native forcing grid; enables conditioning on both paths.
+        forcing_in_channels: Number of raw forcing variables, before hidden-width encoding.
+        forcing_pooling_area: Angular radius multipliers, one per mesh level; uses
+            full-sphere equal-area cap reference radii, independently of ocean pooling.
+        forcing_pooling_method: "distance" (Gaussian average then linear) or
+            "attention" (nearest-state and positional queries).
     """
 
     def __init__(
@@ -78,7 +177,7 @@ class GraphAE(nn.Module):
         self_attention_hops: Optional[Sequence[int]] = None,
         polar_cap_filter_longitude_bands: Optional[Sequence[float]] = None,
         polar_cap_filter_min_latitudes: Optional[Sequence[float]] = None,
-        starting_grid: str = "N_320",
+        starting_grid: SUPPORTED_GRIDS = "N_320",
         saturation: str = "softclip2",
         saturation_bound: float = 5.0,
         noise_level: float = 0.0,
@@ -86,6 +185,10 @@ class GraphAE(nn.Module):
         identity_init: bool = False,
         checkpointing: bool = False,
         use_xfa: bool = True,
+        forcing_grid: Optional[SUPPORTED_GRIDS] = None,
+        forcing_in_channels: Optional[int] = None,
+        forcing_pooling_area: Optional[Sequence[float]] = None,
+        forcing_pooling_method: str = "distance",
         **kwargs,
     ):
         super().__init__()
@@ -205,6 +308,31 @@ class GraphAE(nn.Module):
                     icospheres, self.icosphere_graphs, self_attention_hops
                 )
             ]
+
+        self.forcing_encoder = None
+        if forcing_grid is not None:
+            if forcing_grid not in get_args(SUPPORTED_GRIDS):
+                raise ValueError(f"Unsupported forcing grid {forcing_grid}.")
+            if starting_grid in get_args(POLAR_GRIDS) and forcing_grid not in get_args(POLAR_GRIDS):
+                raise ValueError("A polar starting grid requires a polar forcing grid.")
+            if forcing_pooling_area is None:
+                raise ValueError("forcing_pooling_area is required when forcing_grid is set.")
+            forcing_coords, forcing_mask = create_original_grid(
+                forcing_grid, polar_cap_filter=self.polar_cap_filter
+            )
+            self.forcing_encoder = ForcingEncoder(
+                forcing_coords, forcing_mask,
+                [vertices for vertices, _ in self.icosphere_graphs],
+                [sphere.num_vertices for sphere in icospheres],
+                forcing_in_channels, hid_channels, heads, forcing_pooling_area,
+                forcing_pooling_method, sa_edges, self_attention_blocks,
+                dropout=dropout, checkpointing=checkpointing, use_xfa=use_xfa,
+                identity_init=identity_init,
+            )
+            self.encoder_forcing_embedding = nn.ModuleList([nn.Linear(w, w) for w in hid_channels])
+            self.decoder_forcing_embedding = nn.ModuleList([nn.Linear(w, w) for w in reversed(hid_channels)])
+        elif forcing_in_channels is not None or forcing_pooling_area is not None:
+            raise ValueError("Forcing configuration requires forcing_grid.")
 
         # CREATE AE ARCHITECTURE
 
@@ -334,7 +462,7 @@ class GraphAE(nn.Module):
     @property
     def latent_shape(self) -> Tuple[int, int]:
         num_nodes = self.icosphere_graphs[-1][0].shape[0]
-        latent_channels = self.encoder[-1].out_channels
+        latent_channels = self.encoder[-1].out_features
 
         return num_nodes, latent_channels
 
@@ -378,18 +506,48 @@ class GraphAE(nn.Module):
 
         return date
 
-    def forward(self, x: Tensor, t: Tensor, c: Optional[Tensor] = None):
+    @staticmethod
+    def _check_forcing_batch(forcing, state):
+        if forcing is not None and forcing.ndim == 3 and forcing.shape[0] != state.shape[0]:
+            raise ValueError("Forcing and ocean batch sizes must match.")
+
+    def encode_forcing(self, forcing: Optional[Tensor] = None,
+                       t: Optional[Tensor] = None) -> Optional[list[Tensor]]:
+        """Return finest-to-coarsest forcing features for reuse or caching."""
+        if self.forcing_encoder is None:
+            if forcing is not None:
+                raise ValueError("Forcing supplied but forcing_grid is not configured.")
+            return None
+        if forcing is None:
+            raise ValueError("forcing is required when forcing_grid is configured.")
+
+        return self.forcing_encoder(forcing, t)
+
+    def forward(self, x: Tensor, t: Tensor, c: Optional[Tensor] = None,
+                forcing: Optional[Tensor] = None):
         r"""
         Arguments:
             x: State tensor containing variables of interest, with shape :math:`(B, N, Z)`.
             t: Timestamp tensor, with shape :math:`(B, 4)`.
             c: Context tensor, with shape :math:`(B, N, K)`.
+            forcing: Native forcing tensor (B, N_forcing, forcing_in_channels).
+                Required exactly when forcing_grid is configured.
         """
-        z = self.encode(x, t, c)
-        x = self.decode(z, t, c)
+        self._check_forcing_batch(forcing, x)
+        forcing_features = self.encode_forcing(forcing, t)
+        z = self._encode(x, t, c, forcing_features)
+        x = self._decode(z, t, c, forcing_features)
+        if forcing_features is not None:
+            return z, x, forcing_features
         return z, x
 
-    def encode(self, x: Tensor, t: Tensor, c: Optional[Tensor] = None):
+    def encode(self, x: Tensor, t: Tensor, c: Optional[Tensor] = None,
+               forcing: Optional[Tensor] = None):
+        """Encode ocean state; configured forcing is required on its native grid."""
+        self._check_forcing_batch(forcing, x)
+        return self._encode(x, t, c, self.encode_forcing(forcing, t))
+
+    def _encode(self, x, t, c, forcing_features):
         # Compose context as timestamp features and given physical context
         x = x[..., self.polar_mask, :] ##PG: If a polar cap fileter is used, the input shape will be different from the output shape. This is to ensure that the input shape is consistent with the output shape.
         t = self.encode_date(t)
@@ -410,12 +568,22 @@ class GraphAE(nn.Module):
                 x = x + self.encoder_context_embedding[context_idx](
                     pooled_context[context_idx - 1]
                 )
+                if forcing_features is not None:
+                    x = x + self.encoder_forcing_embedding[context_idx - 1](
+                        forcing_features[context_idx - 1]
+                    )
 
         x = self.saturate(x)
 
         return x
 
-    def decode(self, z: Tensor, t: Tensor, c: Optional[Tensor] = None):
+    def decode(self, z: Tensor, t: Tensor, c: Optional[Tensor] = None,
+               forcing: Optional[Tensor] = None):
+        """Decode ocean latent; configured forcing is required on its native grid."""
+        self._check_forcing_batch(forcing, z)
+        return self._decode(z, t, c, self.encode_forcing(forcing, t))
+
+    def _decode(self, z, t, c, forcing_features):
         # Compose context as timestamp features and given physical context
         t = self.encode_date(t)
         if c is not None:
@@ -432,6 +600,10 @@ class GraphAE(nn.Module):
         for d_block in self.decoder:
             if isinstance(d_block, GraphPoolAttention):
                 z = z + self.decoder_context_embedding[context_idx](pooled_context[context_idx])
+                if forcing_features is not None:
+                    z = z + self.decoder_forcing_embedding[context_idx](
+                        forcing_features[-1 - context_idx]
+                    )
                 context_idx += 1
             z = d_block(z)
 

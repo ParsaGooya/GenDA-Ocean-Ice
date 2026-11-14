@@ -277,6 +277,45 @@ class GraphAttention(nn.Module):
             return self._forward(query, key, edges)
 
 
+class GraphDistancePool(nn.Module):
+    """Average source features with normalized Gaussian distance weights.
+
+    Coordinates are unit-sphere XYZ; radius is angular (radians). Weights
+    are exp(-0.5 * (angular_distance / radius)**2) on the supplied edges.
+    Every destination must have at least one source neighbor.
+    """
+
+    def __init__(self, q_coords: Tensor, k_coords: Tensor, edges: Tensor, radius: float):
+        super().__init__()
+        if not math.isfinite(radius) or radius <= 0:
+            raise ValueError("Distance pooling radius must be finite and positive.")
+        self.num_queries = len(q_coords)
+        self.num_keys = len(k_coords)
+        degree = torch.bincount(edges[:, 0], minlength=self.num_queries)
+        if (degree == 0).any():
+            raise ValueError("Some distance-pooling destinations have no neighbors.")
+        a, b = q_coords[edges[:, 0]].double(), k_coords[edges[:, 1]].double()
+        angles = torch.atan2(torch.linalg.vector_norm(torch.linalg.cross(a, b), dim=-1),
+                             (a * b).sum(-1))
+        weights = torch.exp(-0.5 * (angles / radius).square())
+        totals = weights.new_zeros(self.num_queries).index_add_(0, edges[:, 0], weights)
+        self.register_buffer("edges", edges)
+        self.register_buffer("weights", (weights / totals[edges[:, 0]]).float())
+
+    def forward(self, x: Tensor) -> Tensor:
+        """Pool features shaped (*, source_nodes, channels)."""
+        if x.shape[-2] != self.num_keys:
+            raise ValueError("Source node count does not match distance-pooling geometry.")
+        # Sparse multiplication avoids materializing batch x edges x channels.
+        matrix = torch.sparse_coo_tensor(
+            self.edges.T, self.weights.to(x.dtype),
+            (self.num_queries, self.num_keys), device=x.device,
+        ).coalesce()
+        flat = x.reshape(-1, self.num_keys, x.shape[-1])
+        pooled = torch.stack([torch.sparse.mm(matrix, batch) for batch in flat])
+        return pooled.reshape(*x.shape[:-2], self.num_queries, x.shape[-1])
+
+
 class GraphPoolAttention(nn.Module):
     r"""Creates a graph attention pooling module.
 
