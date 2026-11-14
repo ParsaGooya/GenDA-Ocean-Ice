@@ -6,4 +6,6 @@
 __pycache__/
 *.py[cod]
 
-/tests/
+tests/*
+tests/test_forcing_gae.py
+tests/test_glorys_dataset.py
