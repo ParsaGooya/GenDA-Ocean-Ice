@@ -302,3 +302,88 @@ and creating a small 42-node icosphere. Lockfile consistency and conda-forge-onl
 Conda package sources were also checked. These are local Mac and dependency
 resolution checks, not Castner runtime validation. GPU installation and
 training still need verification on Castner; the ARM wheel cannot run on the Mac.
+
+## Optional atmospheric forcing conditioning
+
+`GraphAE` accepts these additional constructor arguments:
+
+```python
+forcing_grid="N_320",          # omit to keep the unconditional model
+forcing_in_channels=3,         # e.g. temperature, eastward wind, northward wind
+forcing_pooling_area=[2, 2, 2], # one radius multiplier per ico_divisions entry
+forcing_pooling_method="distance",  # or "attention"
+```
+
+Supply `forcing=forcing_tensor` to `forward`, `encode`, and `decode` whenever
+`forcing_grid` is configured. Its shape is `(B, N_forcing, forcing_in_channels)`
+in the native grid order, before the model's regional mask. Context and calendar
+arguments retain their existing meanings. A polar starting grid requires a polar
+forcing grid. The current `RIOPS` grid definition is still an ORG placeholder.
+
+The forcing encoder is hierarchical: native forcing grid → finest ocean
+icosphere → successively coarser icospheres. `forcing_pooling_area` scales the
+angular equal-area cap radius `2 * asin(1 / sqrt(M))`, where `M` is the
+full-sphere destination mesh vertex count. Each transition pools from the
+immediately preceding grid. Empty destination neighborhoods raise an error;
+increase the multiplier or check domain coverage.
+
+Distance mode normalizes Gaussian weights with angular bandwidth equal to this
+radius, then applies a linear channel mapping. Attention mode initializes mesh
+queries from nearest preceding-grid features plus positional embeddings.
+Neither method performs conservative remapping. Calendar embeddings
+are added on the native forcing grid before pooling and after every pooling,
+followed by mesh self-attention using the ocean encoder's per-level block counts
+and connectivity. Ocean geographic context `c` is used only in GraphAE and is not passed to the
+forcing encoder. There is no forcing decoder.
+
+Forcing features are added alongside context after ocean encoder pooling and
+before encoder self-attention, and after ocean decoder self-attention before
+decoder pooling. Both paths are conditioned; no forcing reconstruction targets
+are added. `forward` evaluates the forcing encoder once and shares its outputs.
+
+`model.encode_forcing(forcing_tensor, t)` returns features in
+finest-to-coarsest mesh order. Its last tensor is on the ocean latent mesh, with
+width `hid_channels[-1]` (not necessarily `latent_channels`). Dates are required. Features can be cached for a
+future conditional denoiser after freezing the forcing encoder, using evaluation
+mode and `torch.no_grad()`. Cache entries depend on forcing and date, independently of ocean context.
+Current public ocean methods accept raw forcing; they do not yet accept cached
+features. Changing grids changes geometry buffers;
+transfer across grids should preserve learned weights and rebuild geometry.
+
+## Indexed GLORYS loading
+
+`GlorysDataset` scans NetCDF metadata into an in-memory mapping from each
+variable/date to its file and time offset. Directories are searched recursively,
+so `root/variable/year/*.nc` is supported, as are individual files and sequences.
+No archive-wide Dask graph is built. All requested days must exist in every
+dynamic variable; duplicates, missing dates and inconsistent grids raise errors.
+Static ocean context shares the state grid; forcing may use a different grid.
+
+```python
+from appa2.data.datasets import GlorysDataset
+
+samples = GlorysDataset(
+    state_variables_path="/data/glorys",
+    start_date="2010-01-01", end_date="2011-12-31",
+    surface_variables=["zos"], depth_variables=["thetao", "so"],
+    forcing_variables=["t2m", "u10", "v10"], context_variables=[],
+    forcing_path="/data/atmosphere",
+    trajectory_size=3, trajectory_dt=1, max_open_files=16,
+)
+state, context, time, forcing = samples[0]
+samples.close()
+```
+
+Without forcing variables, the return remains `(state, context, time)`.
+Forcing is appended as the fourth element when enabled. Each field tensor has
+shape `(time, channels, latitude, longitude)`; depth is flattened into channels.
+The graph model expects flattened node/channel inputs, so the training adapter
+must transpose and flatten these tensors in the grid's coordinate order.
+`transform` still processes `(state, context)`; `forcing_transform` processes
+forcing independently. Use module-level picklable transforms with spawned workers.
+
+Files are opened lazily with `chunks=None`; selected trajectories are loaded
+before tensor conversion. A least-recently-used cache bounds handles per worker.
+Metadata scans close their files immediately, and pickling excludes handles.
+The index is rebuilt on initialization, so changed files require a new dataset.
+Performance on the production filesystem has not yet been benchmarked.
