@@ -14,26 +14,23 @@ from omegaconf import DictConfig, OmegaConf, open_dict
 
 import appa2
 
-from appa2.config import PATH_AE, PATH_FORING, PATH_STATE, PATH_STAT_STATE, PATH_STAT_FORCING
+from appa2.config import PATH_AE
 from appa2.config.hydra import compose
 from appa2.data.const import (
     CONTEXT_VARIABLES,
-    DATASET_DATES_TRAINING,
-    DATASET_DATES_VALIDATION,
+    STATE_VARIABLES,
     ATM_FORCING_VARIABLES,
-    GLORYS_DEPTH_LEVELS,
-    GLORYS_SURFACE_VARIABLES,
-    GLORYS_OCEAN_VARIABLES,
-    CONTEXT_VARIABLES
+    SURFACE_VARIABLES,
+    OCEAN_VARIABLES,
 )
+
 from appa2.data.dataloaders import get_dataloader
-from appa2.data.datasets import GlorysDataset
 from appa2.data.transforms import StandardizeTransform
 from appa2.diagnostics.plots import plot_image_grid
-from appa2.losses import AELoss
+from appa2.losses import AELoss, get_weights, get_area_weights
 from appa2.optim import get_optimizer, safe_gd_step
 from appa2.save import safe_load, safe_save, select_ae_architecture
-
+from appa2.data.data_config import get_dataset_specs
 cloudpickle.register_pickle_by_value(appa2)
 
 
@@ -91,48 +88,44 @@ def train(
         n_snapshots + (-n_snapshots) % world_size,
     ]
 
-    splits = [
-        DATASET_DATES_TRAINING,
-        DATASET_DATES_VALIDATION,
-        DATASET_DATES_VALIDATION,
-    ]
 
-    depth_levels = GLORYS_DEPTH_LEVELS
+    data_configs = get_dataset_specs(cfg.grids.main)    
     #(
      #   SUB_PRESSURE_LEVELS if cfg.train.sub_pressure_levels else GLORYS_DEPTH_LEVELS
     #)
 
     st_state = StandardizeTransform(
-        PATH_STAT_STATE,
-        state_variables=GLORYS_OCEAN_VARIABLES,
+        data_configs.path_stat_state,
+        state_variables=STATE_VARIABLES,
         context_variables=CONTEXT_VARIABLES,
-        levels=depth_levels,
+        depths=data_configs.depth_levels,
     )
 
     # st_forcing = StandardizeTransform(
-    #     PATH_STAT_FORCING,
+    #     data_configs.path_stat_forcing,
     #     state_variables=ATM_FORCING_VARIABLES,
     #     context_variables=CONTEXT_VARIABLES,
-    #     levels=depth_levels,
+    #     depths=data_configs.depth_levels,
     # )
 
+
     datasets = [
-        GlorysDataset(
-            state_variables_path=PATH_STATE,
+        data_configs.dataset(
+            state_variables_path=data_configs.state_variables_path,
             start_date=start_date,
             end_date=end_date,
             num_samples=num_samples,
             transform=st_state,
             trajectory_size=cfg.train.trajectory_size,
-            surface_variables= GLORYS_SURFACE_VARIABLES,
-            depth_variables= GLORYS_OCEAN_VARIABLES,
-            # forcing_variables= ATM_FORCING_VARIABLES,
-            # context_variables= CONTEXT_VARIABLES,
-            # forcing_path: Optional[NetCDFSource] = None,
+            surface_variables= SURFACE_VARIABLES,
+            depth_variables= OCEAN_VARIABLES,
+            forcing_variables= ATM_FORCING_VARIABLES,
+            context_variables= CONTEXT_VARIABLES,
+            forcing_path = data_configs.forcing_path,
             # forcing_transform=st_forcing,
-            depths=depth_levels,
+            depths=data_configs.depth_levels,
         )
-        for (start_date, end_date), num_samples in zip(splits, lnum_samples)
+        for (start_date, end_date), num_samples in zip(data_configs.time_splits, lnum_samples)
     ]
 
     # Validation is always non-shuffled
@@ -152,17 +145,19 @@ def train(
 
     # Model
     with open_dict(cfg):
-        num_surface_variables = len(GLORYS_SURFACE_VARIABLES) if GLORYS_SURFACE_VARIABLES else 0
+        num_surface_variables = len(SURFACE_VARIABLES) if SURFACE_VARIABLES else 0
         num_depth_variables = (
-            (len(GLORYS_OCEAN_VARIABLES) * len(depth_levels))
-            if GLORYS_OCEAN_VARIABLES and depth_levels
+            (len(OCEAN_VARIABLES) * len(data_configs.depth_levels))
+            if OCEAN_VARIABLES and data_configs.depth_levels
             else 0
         )
         num_context_variables = len(CONTEXT_VARIABLES) if CONTEXT_VARIABLES else 0
         num_forcing_variables = len(ATM_FORCING_VARIABLES) if ATM_FORCING_VARIABLES else 0
         cfg.ae["in_channels"] = num_surface_variables + num_depth_variables
-        cfg.ae["forcing_channels"] = num_forcing_variables
+        cfg.ae["forcing_in_channels"] = num_forcing_variables
         cfg.ae["context_channels"] = num_context_variables
+        cfg.ae["starting_grid"] = data_configs.grid
+        cfg.ae["forcing_grid"] = cfg.grids.get("forcing", None)
 
     ae_arch = select_ae_architecture(cfg.ae.name)
     ae = ae_arch(**cfg.ae).to(device)
@@ -264,12 +259,31 @@ def train(
     scaler = GradScaler("cuda")
     precision = getattr(torch, cfg.train.precision)
 
+    if cfg.loss.latitude_weighting:
+        if data_configs.grid in ['riops']:
+            raise NotImplementedError
+        else:
+            area_per_grid = get_area_weights(data_configs.grid)
+    else:
+        area_per_grid = None
+
+    AE_weights = get_weights(data_configs.grid,
+                          surface_variables=SURFACE_VARIABLES,
+                          depth_variables=OCEAN_VARIABLES,
+                          area_per_grid=area_per_grid,
+                          level_weighting=cfg.loss.level_weighting,
+                          surface_variable_weights=cfg.loss.get("surface_variable_weights", None),
+                          depth_variable_weights=cfg.loss.get("depth_variable_weights", None),
+                          bathymetry_mask=data_configs.bathymetry_mask,
+                          levels = data_configs.depth_levels,
+                          level_weighting_method=cfg.loss.get("level_weighting_method", "grid_size"),
+                          decay_scale=cfg.loss.get("decay_scale", None))
+
     model_loss = AELoss(
         criterion=cfg.loss.error,
-        latitude_weighting=cfg.loss.latitude_weighting,
-        depths_weighting=cfg.loss.depths_weighting,
-        depths=depth_levels,
+        weights=AE_weights
     )
+    grid_mask = ae.module.polar_mask    
 
     if rank == 0:
         update_steps = trange(start_step, cfg.train.update_steps, ncols=88, ascii=True)
@@ -320,14 +334,14 @@ def train(
                 state, context, timestamp, forcing = batch
 
             state = rearrange(
-                state.to(device, non_blocking=True), "B T Z Lat Lon -> (B T) (Lat Lon) Z"
+                state.to(device, non_blocking=True), data_configs.rearange_protocol
             )
             context = rearrange(
-                context.to(device, non_blocking=True), "B T Z Lat Lon -> (B T) (Lat Lon) Z"
+                context.to(device, non_blocking=True), data_configs.rearange_protocol
             )
             if forcing is not None:
                 forcing = rearrange(
-                    forcing.to(device, non_blocking=True), "B T Z Lat Lon -> (B T) (Lat Lon) Z"
+                    forcing.to(device, non_blocking=True), data_configs.rearange_protocol
                 )
             timestamp = rearrange(timestamp.to(device, non_blocking=True), "B T D -> (B T) D")
 
@@ -339,8 +353,8 @@ def train(
                 else:
                     with ae.no_sync():
                         z, x = ae(state, timestamp, context, forcing)
-
-                loss = model_loss(x, state) + cfg.loss.l2_weight * (z**2).mean()
+                
+                loss = model_loss(x, state, grid_mask) + cfg.loss.l2_weight * (z**2).mean()
 
             # Backward
             if acc_step + 1 == grad_acc_steps:
@@ -402,6 +416,8 @@ def train(
 
                 # Quantitative validation
                 valid_losses = []
+                surf_errors = []
+                depth_errors = []
                 for batch in valid_quant_loader:
                     if len(batch) == 3:
                         state, context, timestamp = batch
@@ -409,14 +425,14 @@ def train(
                     elif len(batch) == 4:
                         state, context, timestamp, forcing = batch
 
-                    state = rearrange(state, "B T Z Lat Lon -> (B T) (Lat Lon) Z").to(
+                    state = rearrange(state, data_configs.rearange_protocol).to(
                         device, non_blocking=True
                     )
-                    context = rearrange(context, "B T Z Lat Lon -> (B T) (Lat Lon) Z").to(
+                    context = rearrange(context, data_configs.rearange_protocol).to(
                         device, non_blocking=True
                     )
                     if forcing is not None:
-                        forcing = rearrange(forcing, "B T Z Lat Lon -> (B T) (Lat Lon) Z").to(
+                        forcing = rearrange(forcing, data_configs.rearange_protocol).to(
                             device, non_blocking=True
                         )
                     timestamp = rearrange(
@@ -428,15 +444,20 @@ def train(
                         dtype=precision,
                     ):
                         _, x = ae(state, timestamp, context, forcing)
-                        loss = model_loss(state, x)
-                        rmse = torch.sqrt((x - state).square().mean(dim=1)).mean(dim=0)
-                        surf_error = rmse[: len(GLORYS_SURFACE_VARIABLES)]
-                        depth_error = rmse[len(GLORYS_OCEAN_VARIABLES):]
+                        loss = model_loss(state, x, grid_mask)
+                        mask = grid_mask.to(device=x.device, dtype=torch.bool)
+                        rmse = torch.sqrt((x[:, mask, :] - state[:, mask, :]).square().mean(dim=1)).mean(dim=0)
+                        surf_error = rmse[: len(SURFACE_VARIABLES)]
+                        depth_error = rmse[len(SURFACE_VARIABLES):]
                     valid_losses.append(loss)
+                    surf_errors.append(surf_error)
+                    depth_errors.append(depth_error)
 
                     del x, state, context
 
                 valid_losses = torch.stack(valid_losses)
+                surf_errors = torch.stack(surf_errors)
+                depth_errors = torch.stack(depth_errors)
                 torch.cuda.empty_cache()
 
                 # Qualitative validation
@@ -450,14 +471,14 @@ def train(
                         data, context, timestamp, forcing = batch
 
                     state = rearrange(
-                        data.to(device, non_blocking=True), "B T Z Lat Lon -> (B T) (Lat Lon) Z"
+                        data.to(device, non_blocking=True), data_configs.rearange_protocol
                     ).nan_to_num()
                     context = rearrange(
-                        context.to(device, non_blocking=True), "B T Z Lat Lon -> (B T) (Lat Lon) Z"
+                        context.to(device, non_blocking=True), data_configs.rearange_protocol
                     ).nan_to_num()
                     if forcing is not None:
                         forcing = rearrange(
-                            forcing.to(device, non_blocking=True), "B T Z Lat Lon -> (B T) (Lat Lon) Z"
+                            forcing.to(device, non_blocking=True), data_configs.rearange_protocol
                         ).nan_to_num()
                     timestamp = rearrange(
                         timestamp.to(device, non_blocking=True), "B T D -> (B T) D"
@@ -469,27 +490,28 @@ def train(
 
                     x = rearrange(
                         x,
-                        "(B T) (Lat Lon) Z -> B T Z Lat Lon",
+                        data_configs.rearange_protocol_inverse,
                         Lon=data.shape[-1],
                         B=data.shape[0],
                     ).cpu()
                     state = rearrange(
                         state,
-                        "(B T) (Lat Lon) Z -> B T Z Lat Lon",
+                        data_configs.rearange_protocol_inverse,
                         Lon=data.shape[-1],
                         B=data.shape[0],
                     ).cpu()
-                    snapshot = torch.cat([state[:, 0, 0, :, :], x[:, 0, 0, :, :]]).to(device)
+                    B, T = state.shape[:2]
+                    snapshot = torch.stack([state[:, 0, 0, :, :], x[:, 0, 0, :, :]], dim = 1).to(device) 
                     snapshots.append(snapshot)
-                    dates.append(timestamp.to(device))
+                    dates.append(timestamp.reshape(B, T, -1)[:, 0].to(device))
                     del x, data, state
 
-                snapshots = torch.stack(snapshots)
-                dates = torch.stack(dates)
+                snapshots = torch.cat(snapshots)
+                dates = torch.cat(dates)
                 if rank == 0:
                     losses_list = [torch.empty_like(valid_losses) for _ in range(world_size)]
-                    surface_rmse = [torch.empty_like(surf_error) for _ in range(world_size)]
-                    depth_rmse = [torch.empty_like(depth_error) for _ in range(world_size)]
+                    surface_rmse = [torch.empty_like(surf_errors) for _ in range(world_size)]
+                    depth_rmse = [torch.empty_like(depth_errors) for _ in range(world_size)]
                     snapshots_list = [torch.empty_like(snapshots) for _ in range(world_size)]
                     dates_list = [torch.empty_like(dates) for _ in range(world_size)]
                 else:
@@ -500,8 +522,8 @@ def train(
                     dates_list = None
 
                 dist.gather(valid_losses, losses_list, dst=0)
-                dist.gather(surf_error, surface_rmse, dst=0)
-                dist.gather(depth_error, depth_rmse, dst=0)
+                dist.gather(surf_errors, surface_rmse, dst=0)
+                dist.gather(depth_errors, depth_rmse, dst=0)
                 dist.gather(snapshots, snapshots_list, dst=0)
                 dist.gather(dates, dates_list, dst=0)
 
@@ -510,28 +532,29 @@ def train(
                     logs["valid/losses/mean"] = valid_losses.mean().item()
                     logs["valid/losses/std"] = valid_losses.std(unbiased=False).item()
 
-                    surf_error = torch.stack(surface_rmse).cpu().mean(0)
-                    depth_error = torch.stack(depth_rmse).cpu().mean(0)
+                    surf_error = torch.cat(surface_rmse, 0).cpu().mean(0)
+                    depth_error = torch.cat(depth_rmse, 0).cpu().mean(0)
                     # Surface
-                    for channel_id, var_surf in enumerate(GLORYS_SURFACE_VARIABLES):
+                    for channel_id, var_surf in enumerate(SURFACE_VARIABLES):
                         logs[f"valid/surface_rmse/{var_surf}"] = surf_error[channel_id].item()
-                    # Atmosphere
-                    for channel_id, var_atm in enumerate(GLORYS_OCEAN_VARIABLES):
-                        for level_id, level in enumerate(depth_levels):
-                            idx = channel_id * len(depth_levels) + level_id
-                            logs[f"valid/atmosphere_rmse/{var_atm}_{level}hPa"] = depth_error[
+                    # Depth
+                    for channel_id, var_depth in enumerate(OCEAN_VARIABLES):
+                        for level_id, level in enumerate(data_configs.depth_levels):
+                            idx = channel_id * len(data_configs.depth_levels) + level_id
+                            logs[f"valid/atmosphere_rmse/{var_depth}_{level}m"] = depth_error[
                                 idx
                             ].item()
 
                     # Order snapshot gt/pred pairs by date and take n_snapshots first ones.
                     snapshots = torch.cat(snapshots_list).cpu()
-                    dates = torch.cat(dates_list).cpu().squeeze(1)
+                    dates = torch.cat(dates_list).cpu()
                     dates = [d.tolist() for d in dates]
                     dates = [
                         f"{date[0]:04d}/{date[1]:02d}/{date[2]:02d} {date[3]:02d}h"
                         for date in dates
                     ]
-                    dates, snapshots = zip(*sorted(zip(dates, snapshots)))
+                    pairs = sorted(zip(dates, snapshots), key=lambda pair: pair[0]) ##PG: sort by date only
+                    dates, snapshots = zip(*pairs)
                     dates = dates[:n_snapshots]
                     snapshots = torch.stack(snapshots)
                     snapshots = snapshots[:n_snapshots]
