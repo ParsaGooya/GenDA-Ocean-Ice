@@ -11,7 +11,7 @@ from typing import Final, Optional, Sequence, Literal
 
 SUPPORTED_GRIDS = Literal["n_320", "glorys", "riops"]
 POLAR_GRIDS = Literal["riops"]
-GLORYS_MIN_LAT: Final[float] = 26
+GLORYS_MIN_LAT: Final[float] = 25
 
 def latlon_to_xyz(grid: Tensor) -> Tensor:
     r"""Converts a latitude-longitude grid to 3D cartesian coordinates.
