@@ -4,6 +4,7 @@ import os
 from collections import OrderedDict
 
 import dask
+import dask.array as da
 import h5py
 import numpy as np
 import torch
@@ -17,16 +18,11 @@ from typing import Callable, Optional, Sequence, Tuple, Union
 
 from .const import (
     DATA_NAN_VALUE,
-    # DATASET_DATES_TEST,
-    # DATASET_DATES_TRAINING,
-    # DATASET_DATES_VALIDATION,
     TOY_DATASET_DATES_TEST,
     TOY_DATASET_DATES_TRAINING,
     TOY_DATASET_DATES_VALIDATION,
     TOY_DATASET_VARIABLES,
-    GLORYS_DEPTH_DIM
 )
-# from ..config import PATH_ERA5
 from ..date import assert_date_format, get_date_features
 from ..save import safe_load
 
@@ -327,10 +323,7 @@ class GlorysDataset(Dataset):
         for name in seen:
             if name not in self._coords:
                 raise ValueError(f"Variable {name!r} missing from its source.")
-            if name not in self._static:
-                missing = set(self.dates) - self.temporal_index[name].keys()
-                if missing:
-                    raise ValueError(f"{name!r} missing {len(missing)} requested daily dates; first: {min(missing)}.")
+            self._validate_coverage(name)
         ocean = self.state_variables + self.context_variables
         self._ocean_coords = self._validate_grid(ocean) if ocean else self._coords[self.forcing_variables[0]]
         self._forcing_coords = self._validate_grid(self.forcing_variables) if self.forcing_variables else self._ocean_coords
@@ -340,6 +333,12 @@ class GlorysDataset(Dataset):
         if num_samples is not None and num_samples > available:
             raise ValueError(f"num_samples exceeds the {available} valid trajectory starts.")
         self._starts = np.arange(available) if num_samples is None else np.linspace(0, available - 1, num_samples, dtype=int)
+
+    def _validate_coverage(self, name: str) -> None:
+        if name not in self._static:
+            missing = set(self.dates) - self.temporal_index[name].keys()
+            if missing:
+                raise ValueError(f"{name!r} missing {len(missing)} requested daily dates; first: {min(missing)}.")
 
     @staticmethod
     def _discover_files(source: NetCDFSource) -> list[str]:
@@ -365,7 +364,7 @@ class GlorysDataset(Dataset):
                 if set(field.dims) - {'time', 'depth', 'longitude', 'latitude'}:
                     raise ValueError(f"Unexpected dimensions for {name!r}.")
                 if self.depths is not None and 'depth' in field.dims:
-                    field = field.sel(**{GLORYS_DEPTH_DIM:self.depths})
+                    field = field.sel(**{"depth":self.depths})
                 coords = {d: field[d].values.copy() for d in ('longitude', 'latitude', 'depth') if d in field.dims}
                 if name in self._coords and (
                     coords.keys() != self._coords[name].keys() or any(
@@ -436,7 +435,7 @@ class GlorysDataset(Dataset):
             for path, positions in requests.items():
                 field = self._open_file(path)[name]
                 if self.depths is not None and 'depth' in field.dims:
-                    field = field.sel(**{GLORYS_DEPTH_DIM:self.depths})
+                    field = field.sel(**{"depth":self.depths})
                 if 'time' in field.dims:
                     field = field.isel(time=[position for _, position in positions])
                 else:
@@ -495,6 +494,111 @@ class GlorysDataset(Dataset):
         state['_files'] = OrderedDict()
         state['_pid'] = None
         return state
+
+class GlorysDataset2(GlorysDataset):
+    """GLORYS interface with ERA5-style lazy xarray/Dask trajectory loading.
+
+    Inherits the exact constructor, routing, sampling and output conventions of
+    GlorysDataset. NetCDF variables are opened with one-day Dask chunks, sorted
+    and concatenated along time, then materialized only after sample selection.
+    ``dataset`` maps variable names to lazy DataArrays, keeping native forcing
+    grids separate. No date-to-file index or custom handle cache is populated.
+    ``max_open_files`` is accepted for compatibility but does not control xarray's
+    file manager. Compare with GlorysDataset using identical constructor kwargs.
+    """
+
+    def _index_file(self, path: str, names: Sequence[str]) -> None:
+        if not hasattr(self, "_sources"):
+            self._sources: list[xr.Dataset] = []
+            self._parts: dict[str, list[xr.DataArray]] = {}
+            self.dataset: dict[str, xr.DataArray] = {}
+        ds = xr.open_dataset(path, chunks={"time": 1}, cache=False)
+        self._sources.append(ds)
+        try:
+            for name in names:
+                if name not in ds.data_vars:
+                    continue
+                field = ds[name]
+                if not {"longitude", "latitude"}.issubset(field.dims):
+                    raise ValueError(f"{name!r} must have longitude and latitude dimensions.")
+                if set(field.dims) - {"time", "depth", "longitude", "latitude"}:
+                    raise ValueError(f"Unexpected dimensions for {name!r}.")
+                if self.depths is not None and "depth" in field.dims:
+                    field = field.sel(**{"depth": self.depths})
+                coords = {d: field[d].values.copy()
+                          for d in ("longitude", "latitude", "depth") if d in field.dims}
+                if name in self._coords and (
+                    coords.keys() != self._coords[name].keys() or any(
+                        not np.array_equal(v, self._coords[name][d]) for d, v in coords.items()
+                    )
+                ):
+                    raise ValueError(f"Grid/depth coordinates change across files for {name!r}.")
+                self._coords[name] = coords
+                if "time" not in field.dims:
+                    if name in self._parts:
+                        raise ValueError(f"Ambiguous repeated static source for {name!r}.")
+                    self._static[name] = path
+                else:
+                    if name in self._static:
+                        raise ValueError(f"Mixed static and dynamic sources for {name!r}.")
+                    if not np.issubdtype(field.time.dtype, np.datetime64):
+                        raise ValueError("GLORYS time must decode to numpy datetime64.")
+                    dates = field.time.values.astype("datetime64[D]")
+                    if np.isnat(dates).any() or len(np.unique(dates)) != len(dates):
+                        raise ValueError(f"{name!r} must have at most one field per day.")
+                    field = field.assign_coords(time=dates).sortby("time")
+                    field = field.sel(time=slice(self.dates[0], self.dates[-1]))
+                self._parts.setdefault(name, []).append(field)
+        except Exception:
+            self.close()
+            raise
+
+    def _validate_coverage(self, name: str) -> None:
+        parts = self._parts.pop(name)
+        if name in self._static:
+            field = parts[0]
+        else:
+            field = xr.concat(parts, dim="time", join="exact").sortby("time")
+            dates = field.time.values.astype("datetime64[D]")
+            if len(np.unique(dates)) != len(dates):
+                raise ValueError(f"Duplicate date for {name!r}.")
+            missing = np.setdiff1d(self.dates, dates)
+            if len(missing):
+                raise ValueError(f"{name!r} missing {len(missing)} requested daily dates; first: {missing[0]}.")
+        self.dataset[name] = field
+
+    def _load_variables(
+        self, names: Sequence[str], dates: np.ndarray, coords: dict[str, np.ndarray]
+    ) -> Tensor:
+        if not names:
+            return torch.empty((len(dates), 0, len(coords["latitude"]),
+                                len(coords["longitude"])), dtype=torch.float32)
+        with dask.config.set(**{"array.slicing.split_large_chunks": True}):
+            channels = []
+            for name in names:
+                field = self.dataset[name]
+                if "time" in field.dims:
+                    field = field.sel(time=dates)
+                else:
+                    field = field.expand_dims(time=dates)
+                order = ["time"] + (["depth"] if "depth" in field.dims else [])
+                field = field.transpose(*order, "latitude", "longitude")
+                channels.append(field.data.reshape(
+                    (len(dates), -1, len(coords["latitude"]), len(coords["longitude"]))
+                ))
+            # Compute the selected trajectory together, leaving the archive lazy.
+            array = da.concatenate(channels, axis=1).compute()
+            return torch.from_numpy(np.asarray(array, dtype=np.float32))
+
+    def close(self) -> None:
+        """Release xarray handles; lazy file managers can reopen on later reads."""
+        for source in getattr(self, "_sources", []):
+            source.close()
+
+    def __getstate__(self) -> dict[str, object]:
+        # Xarray/Dask file managers serialize paths and reopen in worker processes.
+        return self.__dict__.copy()
+
 
 class LatentBlanketDataset(Dataset):
     r"""Dataset for latent blankets.
@@ -597,6 +701,9 @@ def get_datasets(**kwargs) -> Tuple[ERA5Dataset, ERA5Dataset, ERA5Dataset]:
         kwargs: Keyword arguments passed to :class:`ERA5Dataset`.
     """
 
+    from ..config import PATH_ERA5
+    from .const import DATASET_DATES_TEST, DATASET_DATES_TRAINING, DATASET_DATES_VALIDATION
+
     splits = [
         DATASET_DATES_TRAINING,
         DATASET_DATES_VALIDATION,
@@ -634,6 +741,8 @@ def get_toy_datasets(
         variables: Variable names to retain from the dataset.
         kwargs: Keyword arguments passed to :class:`ERA5Dataset`.
     """
+
+    from ..config import PATH_ERA5
 
     if variables is None:
         variables = TOY_DATASET_VARIABLES

@@ -39,3 +39,24 @@ in the indexes rather than retained as separate attributes. The temporal index i
 in memory and is rebuilt for each new dataset instance.
 
 This documentation was produced with the assistance of AI.
+
+## Comparing with GlorysDataset2
+
+Import `GlorysDataset2` from `appa2.data.datasets` and pass exactly the same
+arguments as `GlorysDataset`. Both return identical sample structures, daily
+trajectory starts, float32 channel ordering, depth selection, transforms, and
+native forcing grids.
+
+| Loader | Archive representation | Sample loading |
+|---|---|---|
+| `GlorysDataset` | Metadata-only date-to-file index and per-worker LRU file handles | Groups requested dates by file and reads selected slices without Dask |
+| `GlorysDataset2` | Lazy xarray DataArrays backed by Dask, with one-day time chunks | Selects the trajectory from concatenated/sorted arrays and computes the selected graph |
+
+The second loader mirrors ERA5's lazy slicing/materialization approach while
+reading the GLORYS NetCDF layout. Its `dataset` attribute is a dictionary keyed
+by variable, so forcing coordinates never align or expand the ocean grid.
+`max_open_files` is accepted but does not bound xarray's file manager cache.
+Neither loader preloads the full archive. `GlorysDataset2` does retain an archive
+Dask graph; compare initialization time as well as repeated DataLoader throughput
+and memory with identical worker, batch, and shuffle settings. No performance
+winner is assumed without measurements on the actual archive.
