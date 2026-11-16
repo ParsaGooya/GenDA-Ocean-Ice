@@ -9,8 +9,8 @@ from typing import Final, Optional, Sequence, Literal
 
 
 
-SUPPORTED_GRIDS = Literal["N_320", "glorys", "RIOPS"]
-POLAR_GRIDS = Literal["RIOPS"]
+SUPPORTED_GRIDS = Literal["n_320", "glorys", "riops"]
+POLAR_GRIDS = Literal["riops"]
 GLORYS_MIN_LAT: Final[float] = 26
 
 def latlon_to_xyz(grid: Tensor) -> Tensor:
@@ -227,11 +227,11 @@ def create_original_grid(
             coord = create_N320()
         elif grid_name == "glorys":
             coord = create_glorys(GLORYS_MIN_LAT)
-        elif grid_name == "RIOPS":
+        elif grid_name == "riops":
             coord = create_ORG(80)
         else:
             raise ValueError(
-                f"Unsupported grid {grid_name}. Supported grids are 'N_320', 'glorys', 'RIOPS'."
+                f"Unsupported grid {grid_name}. Supported grids are 'N_320', 'glorys', 'riops'."
             )
 
         if polar_cap_filter is not None:
