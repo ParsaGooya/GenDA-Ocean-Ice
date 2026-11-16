@@ -524,7 +524,8 @@ class GraphAE(nn.Module):
         return self.forcing_encoder(forcing, t)
 
     def forward(self, x: Tensor, t: Tensor, c: Optional[Tensor] = None,
-                forcing: Optional[Tensor] = None):
+                forcing: Optional[Tensor] = None, 
+                return_forcing_features: bool = False):
         r"""
         Arguments:
             x: State tensor containing variables of interest, with shape :math:`(B, N, Z)`.
@@ -533,19 +534,22 @@ class GraphAE(nn.Module):
             forcing: Native forcing tensor (B, N_forcing, forcing_in_channels).
                 Required exactly when forcing_grid is configured.
         """
-        self._check_forcing_batch(forcing, x)
-        forcing_features = self.encode_forcing(forcing, t)
-        z = self._encode(x, t, c, forcing_features)
+        z, forcing_features = self.encode(x, t, c, forcing, True)
         x = self._decode(z, t, c, forcing_features)
-        if forcing_features is not None:
+        if return_forcing_features:
             return z, x, forcing_features
         return z, x
 
     def encode(self, x: Tensor, t: Tensor, c: Optional[Tensor] = None,
-               forcing: Optional[Tensor] = None):
+               forcing: Optional[Tensor] = None,
+               return_forcing_features: bool = False):
         """Encode ocean state; configured forcing is required on its native grid."""
         self._check_forcing_batch(forcing, x)
-        return self._encode(x, t, c, self.encode_forcing(forcing, t))
+        forcing_features = self.encode_forcing(forcing, t)
+        z = self._encode(x, t, c, forcing_features)
+        if return_forcing_features:
+            return z, forcing_features
+        return z
 
     def _encode(self, x, t, c, forcing_features):
         # Compose context as timestamp features and given physical context
@@ -581,7 +585,8 @@ class GraphAE(nn.Module):
                forcing: Optional[Tensor] = None):
         """Decode ocean latent; configured forcing is required on its native grid."""
         self._check_forcing_batch(forcing, z)
-        return self._decode(z, t, c, self.encode_forcing(forcing, t))
+        forcing_features = self.encode_forcing(forcing, t)
+        return self._decode(z, t, c, forcing_features)
 
     def _decode(self, z, t, c, forcing_features):
         # Compose context as timestamp features and given physical context
