@@ -12,34 +12,50 @@ class StandardizeTransform:
     r"""Creates a standardization tranform with pre-computed statistics.
 
     Arguments:
-        path: Path to the Zarr dataset containing mean and standard deviation statistics.
+        path: NetCDF file or Zarr store containing mean and standard deviation statistics.
+            Zarr stores are detected by a .zarr suffix or local store metadata.
         state_variables: Variables present in the non-standardized dataset for the state. if None, all variables are used.
         context_variables: Variables present in the non-standardized dataset for the context. If None, no context is used.
-        levels: Atmospheric levels to select from the dataset. If None, all levels are used.
+        depths: Depths to select from the dataset. If None, all depths are used.
+        depth_dim_name: Name of the depth coordinate.
     """
 
     def __init__(
         self,
-        path: Path,
+        path: str | Path,
         state_variables: Optional[Sequence[str]] = None,
         context_variables: Optional[Sequence[str]] = None,
-        levels: Optional[Sequence[str]] = None,
+        depths: Optional[Sequence[str]] = None,
+        depth_dim_name: Optional[str] = 'depth'
     ):
-        stats = xr.open_zarr(path)
+        with self._open_stats(path) as source:
+            stats = source
+            if depths is not None:
+                stats = stats.sel(**{depth_dim_name:depths})
 
-        if levels is not None:
-            stats = stats.sel(level=levels)
+            self.state_mean, self.state_std = self._stats_to_tensor(stats, state_variables)
+            if context_variables is not None:
+                self.context_mean, self.context_std = self._stats_to_tensor(
+                    stats, context_variables
+                )
+            else:
+                self.context_mean = None
+                self.context_std = None
 
-        self.state_mean, self.state_std = self._stats_zarr_to_tensor(stats, state_variables)
-        if context_variables is not None:
-            self.context_mean, self.context_std = self._stats_zarr_to_tensor(
-                stats, context_variables
-            )
-        else:
-            self.context_mean = None
-            self.context_std = None
+    @staticmethod
+    def _open_stats(path: str | Path) -> xr.Dataset:
+        """Detect Zarr stores by path/metadata; let xarray detect NetCDF engines."""
+        local_path = Path(path)
+        is_zarr = str(path).rstrip("/").lower().endswith(".zarr") or (
+            local_path.is_dir()
+            and any((local_path / marker).is_file()
+                    for marker in (".zgroup", ".zmetadata", "zarr.json"))
+        )
+        if is_zarr:
+            return xr.open_zarr(path)
+        return xr.open_dataset(path)
 
-    def _stats_zarr_to_tensor(
+    def _stats_to_tensor(
         self, stats: xr.DataArray, variables: Optional[Sequence[str]] = None
     ) -> Tensor:
         r"""Converts Zarr statistics to a tensor.
@@ -54,14 +70,14 @@ class StandardizeTransform:
         if variables is not None:
             stats = stats[variables]
 
-        era5_stats_array = stats.to_stacked_array(
+        stats_array = stats.to_stacked_array(
             new_dim="z_total",
             sample_dims=("statistic",),
         ).transpose("z_total", ...)
-        era5_stats_tensor = torch.tensor(era5_stats_array.load().data)
-        era5_stats_tensor = era5_stats_tensor[None, :, :, None, None]  # [1, n_vars, 2, 1, 1]
+        stats_tensor = torch.tensor(stats_array.load().data)
+        stats_tensor = stats_tensor[None, :, :, None, None]  # [1, n_vars, 2, 1, 1]
 
-        return era5_stats_tensor[:, :, 0], era5_stats_tensor[:, :, 1]
+        return stats_tensor[:, :, 0], stats_tensor[:, :, 1]
 
     def __call__(self, state: Tensor, context: Tensor) -> Tensor:
         r"""Applies standardization to the input tensor.
