@@ -17,16 +17,16 @@ from typing import Callable, Optional, Sequence, Tuple, Union
 
 from .const import (
     DATA_NAN_VALUE,
-    DATASET_DATES_TEST,
-    DATASET_DATES_TRAINING,
-    DATASET_DATES_VALIDATION,
+    # DATASET_DATES_TEST,
+    # DATASET_DATES_TRAINING,
+    # DATASET_DATES_VALIDATION,
     TOY_DATASET_DATES_TEST,
     TOY_DATASET_DATES_TRAINING,
     TOY_DATASET_DATES_VALIDATION,
     TOY_DATASET_VARIABLES,
     GLORYS_DEPTH_DIM
 )
-from ..config import PATH_ERA5
+# from ..config import PATH_ERA5
 from ..date import assert_date_format, get_date_features
 from ..save import safe_load
 
@@ -442,7 +442,7 @@ class GlorysDataset(Dataset):
                 else:
                     field = field.expand_dims(time=len(positions))
                 order = ['time'] + (['depth'] if 'depth' in field.dims else []) + ['latitude', 'longitude']
-                array = np.asarray(field.transpose(*order).load().values, dtype=np.float32)
+                array = np.asarray(field.load().transpose(*order).values, dtype=np.float32)
                 array = array.reshape(len(positions), -1, len(coords['latitude']), len(coords['longitude']))
                 if values is None:
                     values = np.empty((len(dates), *array.shape[1:]), dtype=np.float32)

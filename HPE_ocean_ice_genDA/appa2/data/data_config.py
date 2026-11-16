@@ -3,6 +3,7 @@ from appa2.data.const import (
     GLORYS_DATASET_DATES_TRAINING,
     GLORYS_DATASET_DATES_VALIDATION,
     GLORYS_DEPTH_LEVELS,
+    GLORYS_DEPTH_DIM
 )
 from appa2.config import (
     PATH_GLORYS,
@@ -10,7 +11,6 @@ from appa2.config import (
     PATH_GLORYS_STAT_FORCING,
     PATH_GLORYS_STAT_STATE,
     PATH_GLORYS_BATHYMETRY,
-    GLORYS_DEPTH_DIM
 )
 from appa2.grid import SUPPORTED_GRIDS
 from appa2.data.datasets import GlorysDataset, NetCDFSource
