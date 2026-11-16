@@ -2,12 +2,17 @@ defaults:
   - ae: ico7to5
   - optim: soap
 
+grids:
+  main: GLORYS
+  forcing: null
+
 train:
   update_steps: 100_000
   # Number of elements that can fit at once on a gpu
   batch_element_per_gpu: 1
   # Effective batch size for one optimizer step
   batch_size_per_step: 64
+  num_workers: 4
   precision: float32
   # Minimal number of samples seen to log statistics
   log_interval: 1024

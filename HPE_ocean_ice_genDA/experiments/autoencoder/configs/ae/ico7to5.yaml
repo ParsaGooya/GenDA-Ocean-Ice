@@ -10,6 +10,7 @@ self_attention_blocks: [1, 2, 3]
 
 use_hop_pooling: false
 pooling_area: [2, 2, 2]
+forcing_pooling_area: [2,2,2]
 
 checkpointing: true
 identity_init: false

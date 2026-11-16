@@ -4,7 +4,7 @@ r"""GLORYS constants."""
 GLORYS_DATE_START = "2010-01-01"
 GLORYS_DATE_END = "2026-12-31"
 GLORYS_RESOLUTION = (4320, 787) 
-GLORYS_TIME_INTERVAL = 1
+TIME_INTERVAL = 1
 GLORYS_NUM_TOTAL_LEVELS = 22
 # GLORYS_NUM_COARSENED_LEVELS = 13
 
@@ -87,7 +87,7 @@ SUB_PRESSURE_LEVELS = [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925
 BASE_DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
 
 # fmt: on
-GLORYS_SURFACE_VARIABLES = [
+SURFACE_VARIABLES = [
     "zos",
     "siconc",
     "sithick",
@@ -96,29 +96,29 @@ GLORYS_SURFACE_VARIABLES = [
     # "mlotst",
 ]
 
-ATM_FORCING_VARIABLES = [
-    "2m_temperature",
-    "10m_u_component_of_wind",
-    "10m_v_component_of_wind",
-    "total_precipitation",
-]
+ATM_FORCING_VARIABLES =  []#[
+#     "2m_temperature",
+#     "10m_u_component_of_wind",
+#     "10m_v_component_of_wind",
+#     "total_precipitation",
+# ]
 
-GLORYS_OCEAN_VARIABLES = [
+OCEAN_VARIABLES = [
     "thetao",
     "so",
     "uo",
     "vo",
 ]
 
-GLORYS_VARIABLES = GLORYS_SURFACE_VARIABLES + GLORYS_OCEAN_VARIABLES
+STATE_VARIABLES = SURFACE_VARIABLES + OCEAN_VARIABLES
 
-CONTEXT_VARIABLES = [
-    "deptho",
-    "land_sea_mask",
-    # "distance_to_coast",
-    # "eastward_bathymetric_gradient",
-    # "northward_bathymetric_gradient",
-]
+CONTEXT_VARIABLES = [] #[
+#     "deptho",
+#     "land_sea_mask",
+#     # "distance_to_coast",
+#     # "eastward_bathymetric_gradient",
+#     # "northward_bathymetric_gradient",
+# ]
 
 # Corresponding atmospheric variables for surface variables
 ATM_SURF_VARIABLE_MAPPINGS = {
@@ -128,9 +128,9 @@ ATM_SURF_VARIABLE_MAPPINGS = {
 }
 
 DATA_NAN_VALUE = 0.0
-DATASET_DATES_TRAINING = ("2010-01-01", "2023-12-31")
-DATASET_DATES_VALIDATION = ("2024-01-01", "2024-12-31")
-DATASET_DATES_TEST = ("2025-01-01", "2025-12-31")
+GLORYS_DATASET_DATES_TRAINING = ("2010-01-01", "2023-12-31")
+GLORYS_DATASET_DATES_VALIDATION = ("2024-01-01", "2024-12-31")
+GLORYS_DATASET_DATES_TEST = ("2025-01-01", "2025-12-31")
 
 # Toy dataset
 TOY_DATASET_VARIABLES = ["2m_temperature", "temperature"]
