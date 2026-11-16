@@ -22,7 +22,3 @@ output/
 tmp/
 
 */tests/*
-
-
-# Keep regression coverage for the two GLORYS loaders.
-!HPE_ocean_ice_genDA/tests/test_glorys_dataset.py
