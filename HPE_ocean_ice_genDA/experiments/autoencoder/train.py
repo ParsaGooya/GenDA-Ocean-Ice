@@ -97,15 +97,16 @@ def train(
     st_state = StandardizeTransform(
         data_configs.path_stat_state,
         state_variables=STATE_VARIABLES,
-        context_variables=CONTEXT_VARIABLES,
+        context_variables=CONTEXT_VARIABLES if len(CONTEXT_VARIABLES)>0 else None,
         depths=data_configs.depth_levels,
+        depth_dim_name=data_configs.depth_dim_name
     )
 
     # st_forcing = StandardizeTransform(
     #     data_configs.path_stat_forcing,
     #     state_variables=ATM_FORCING_VARIABLES,
-    #     context_variables=CONTEXT_VARIABLES,
     #     depths=data_configs.depth_levels,
+        # depth_dim_name=data_configs.depth_dim_name
     # )
 
 
@@ -556,7 +557,7 @@ def train(
                     pairs = sorted(zip(dates, snapshots), key=lambda pair: pair[0]) ##PG: sort by date only
                     dates, snapshots = zip(*pairs)
                     dates = dates[:n_snapshots]
-                    snapshots = torch.stack(snapshots)
+                    snapshots = torch.cat(snapshots)
                     snapshots = snapshots[:n_snapshots]
                     # Set the same vmap for all snapshots
                     vmin = snapshots[:, 0].min().item()

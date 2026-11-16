@@ -10,6 +10,7 @@ from appa2.config import (
     PATH_GLORYS_STAT_FORCING,
     PATH_GLORYS_STAT_STATE,
     PATH_GLORYS_BATHYMETRY,
+    GLORYS_DEPTH_DIM
 )
 from appa2.grid import SUPPORTED_GRIDS
 from appa2.data.datasets import GlorysDataset, NetCDFSource
@@ -33,6 +34,7 @@ class dataset_config:
     bathymetry_path: Optional[NetCDFSource] = None
     path_stat_state:  Optional[NetCDFSource] = None
     path_stat_forcing:  Optional[NetCDFSource] = None
+    depth_dim_name: Optional[str] = 'depth'
 
     def __post_init__(self):
         self.grid = self.grid.lower()
@@ -76,6 +78,7 @@ def get_dataset_specs(starting_grid: SUPPORTED_GRIDS):
             # forcing_path = PATH_GLORYS_STAT_FORCING,
             # path_stat_state = PATH_GLORYS_STAT_STATE,
             # path_stat_forcing= PATH_GLORYS_STAT_FORCING,
+            depth_dim_name=GLORYS_DEPTH_DIM,
         )
     elif starting_grid == "riops":
         raise NotImplementedError("riops dataset is not implemented yet.")

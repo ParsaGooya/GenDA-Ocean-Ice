@@ -24,6 +24,7 @@ from .const import (
     TOY_DATASET_DATES_TRAINING,
     TOY_DATASET_DATES_VALIDATION,
     TOY_DATASET_VARIABLES,
+    GLORYS_DEPTH_DIM
 )
 from ..config import PATH_ERA5
 from ..date import assert_date_format, get_date_features
@@ -364,7 +365,7 @@ class GlorysDataset(Dataset):
                 if set(field.dims) - {'time', 'depth', 'longitude', 'latitude'}:
                     raise ValueError(f"Unexpected dimensions for {name!r}.")
                 if self.depths is not None and 'depth' in field.dims:
-                    field = field.sel(depth=self.depths)
+                    field = field.sel(**{GLORYS_DEPTH_DIM:self.depths})
                 coords = {d: field[d].values.copy() for d in ('longitude', 'latitude', 'depth') if d in field.dims}
                 if name in self._coords and (
                     coords.keys() != self._coords[name].keys() or any(
@@ -435,7 +436,7 @@ class GlorysDataset(Dataset):
             for path, positions in requests.items():
                 field = self._open_file(path)[name]
                 if self.depths is not None and 'depth' in field.dims:
-                    field = field.sel(depth=self.depths)
+                    field = field.sel(**{GLORYS_DEPTH_DIM:self.depths})
                 if 'time' in field.dims:
                     field = field.isel(time=[position for _, position in positions])
                 else:
