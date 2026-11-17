@@ -12,6 +12,9 @@ use_hop_pooling: false
 pooling_area: [2, 2, 2]
 forcing_pooling_area: [2,2,2]
 
+polar_cap_filter_longitude_bands: [-100, 100]
+polar_cap_filter_min_latitudes: [25,43]
+
 checkpointing: true
 identity_init: false
 use_xfa: True
