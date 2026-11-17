@@ -331,8 +331,7 @@ class GraphAE(nn.Module):
             )
             self.encoder_forcing_embedding = nn.ModuleList([nn.Linear(w, w) for w in hid_channels])
             self.decoder_forcing_embedding = nn.ModuleList([nn.Linear(w, w) for w in reversed(hid_channels)])
-        elif forcing_in_channels is not None or forcing_pooling_area is not None:
-            raise ValueError("Forcing configuration requires forcing_grid.")
+
 
         # CREATE AE ARCHITECTURE
 
