@@ -109,7 +109,7 @@ def train(
         # depth_dim_name=data_configs.depth_dim_name
     # )
 
-    fill_nans = cfg.train.get("fill_nans", True)
+    fill_nans = cfg.train.get("fill_nans", False)
     datasets = [
         data_configs.dataset(
             state_variables_path=data_configs.state_variables_path,
@@ -285,6 +285,7 @@ def train(
         criterion=cfg.loss.error,
         weights=AE_weights
     )   
+    metric_support = AE_weights.T.to(device) > 0
 
     if rank == 0:
         update_steps = trange(start_step, cfg.train.update_steps, ncols=88, ascii=True)
@@ -341,8 +342,6 @@ def train(
             forcing = torch.where(torch.isfinite(forcing), forcing, 0.0)
 
         return state, context, timestamp, forcing, target, loss_mask
-
-            
 
     for step in update_steps:
         start = time.time()
@@ -420,7 +419,8 @@ def train(
                 logs["train/lr"] = optimizer.param_groups[0]["lr"]
 
         # Validation
-        if cfg.valid.log_interval <= count_log_val:
+        log_validation = cfg.valid.log_interval <= count_log_val
+        if log_validation:
             with torch.no_grad():
                 ae.eval()
 
@@ -441,48 +441,43 @@ def train(
                     ):
                         _, x = ae(state, timestamp, context, forcing)
                         loss = model_loss(x, target, loss_mask)
-                        mask = loss_mask.to(device=x.device, dtype=torch.bool)
-                        rmse = torch.sqrt((x[:, mask, :] - target[:, mask, :]).square().mean(dim=1)).mean(dim=0)
-                        surf_error = rmse[: len(SURFACE_VARIABLES)]
-                        depth_error = rmse[len(SURFACE_VARIABLES):]
+                    mask = loss_mask & metric_support
+                    error = torch.where(mask, x.float() - target.float(), 0.0)
+                    rmse = (error.square().sum(dim=1) / mask.sum(dim=1)).sqrt()
                     valid_losses.append(loss)
-                    surf_errors.append(surf_error)
-                    depth_errors.append(depth_error)
+                    surf_errors.append(rmse[:, :len(SURFACE_VARIABLES)])
+                    depth_errors.append(rmse[:, len(SURFACE_VARIABLES):])
 
                     del x, state, context, target
 
                 valid_losses = torch.stack(valid_losses)
-                surf_errors = torch.stack(surf_errors)
-                depth_errors = torch.stack(depth_errors)
+                surf_errors = torch.cat(surf_errors)
+                depth_errors = torch.cat(depth_errors)
                 torch.cuda.empty_cache()
 
                 # Qualitative validation
                 snapshots = []
                 dates = []
                 for batch in valid_quali_loader:
+                    batch_size, trajectory_size = batch[0].shape[:2]
+                    longitude_size = batch[0].shape[-1]
                     state, context, timestamp, forcing, target, loss_mask = prepare_batch(batch)
 
                     with torch.autocast(device_type="cuda", dtype=precision):
                         _, x = ae(state, timestamp, context, forcing)
-                    del context
-
-                    x = rearrange(
-                        x,
+                    # Plot the first surface channel on the same support for both panels.
+                    mask = loss_mask[..., 0] & metric_support[:, 0]
+                    pair = torch.stack((target[..., 0], x[..., 0].float()), dim=-1)
+                    pair = pair.masked_fill(~mask[..., None], torch.nan)
+                    pair = rearrange(
+                        pair,
                         data_configs.rearange_protocol_inverse,
-                        Lon=data.shape[-1],
-                        B=data.shape[0],
-                    ).cpu()
-                    target = rearrange(
-                        target,
-                        data_configs.rearange_protocol_inverse,
-                        Lon=data.shape[-1],
-                        B=data.shape[0],
-                    ).cpu()
-                    B, T = target.shape[:2]
-                    snapshot = torch.stack([target[:, 0, 0, :, :], x[:, 0, 0, :, :]], dim = 1).to(device) 
-                    snapshots.append(snapshot)
-                    dates.append(timestamp.reshape(B, T, -1)[:, 0].to(device))
-                    del x, data, state, target
+                        Lon=longitude_size,
+                        B=batch_size,
+                    )
+                    snapshots.append(pair[:, 0].contiguous())
+                    dates.append(timestamp.reshape(batch_size, trajectory_size, -1)[:, 0])
+                    del x, state, context, target
 
                 snapshots = torch.cat(snapshots)
                 dates = torch.cat(dates)
@@ -510,8 +505,8 @@ def train(
                     logs["valid/losses/mean"] = valid_losses.mean().item()
                     logs["valid/losses/std"] = valid_losses.std(unbiased=False).item()
 
-                    surf_error = torch.cat(surface_rmse, 0).cpu().mean(0)
-                    depth_error = torch.cat(depth_rmse, 0).cpu().mean(0)
+                    surf_error = torch.cat(surface_rmse, 0).cpu().nanmean(0)
+                    depth_error = torch.cat(depth_rmse, 0).cpu().nanmean(0)
                     # Surface
                     for channel_id, var_surf in enumerate(SURFACE_VARIABLES):
                         logs[f"valid/surface_rmse/{var_surf}"] = surf_error[channel_id].item()
@@ -534,11 +529,12 @@ def train(
                     pairs = sorted(zip(dates, snapshots), key=lambda pair: pair[0]) ##PG: sort by date only
                     dates, snapshots = zip(*pairs)
                     dates = dates[:n_snapshots]
-                    snapshots = torch.cat(snapshots)
-                    snapshots = snapshots[:n_snapshots]
+                    snapshots = torch.stack(snapshots[:n_snapshots])
                     # Set the same vmap for all snapshots
-                    vmin = snapshots[:, 0].min().item()
-                    vmax = snapshots[:, 0].max().item()
+                    truth = snapshots[:, 0]
+                    finite_truth = truth[torch.isfinite(truth)]
+                    vmin = finite_truth.min().item() if finite_truth.numel() else None
+                    vmax = finite_truth.max().item() if finite_truth.numel() else None
                     snapshots = rearrange(snapshots, "B T ... -> (T B) ...")
 
                     fig = plot_image_grid(
@@ -590,7 +586,7 @@ def train(
 
             count_log_save = 0
 
-        if cfg.valid.log_interval <= count_log_val or cfg.train.log_interval <= count_log_train:
+        if log_validation or cfg.train.log_interval <= count_log_train:
             if cfg.train.log_interval <= count_log_train:
                 count_log_train = 0
                 losses = []
