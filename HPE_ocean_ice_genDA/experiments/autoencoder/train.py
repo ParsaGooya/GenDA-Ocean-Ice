@@ -109,7 +109,7 @@ def train(
         # depth_dim_name=data_configs.depth_dim_name
     # )
 
-
+    fill_nans = cfg.train.get("fill_nans", True)
     datasets = [
         data_configs.dataset(
             state_variables_path=data_configs.state_variables_path,
@@ -125,6 +125,7 @@ def train(
             forcing_path = data_configs.forcing_path,
             # forcing_transform=st_forcing,
             depths=data_configs.depth_levels,
+            fill_nans=fill_nans,
         )
         for (start_date, end_date), num_samples in zip(data_configs.time_splits, lnum_samples)
     ]
@@ -283,8 +284,7 @@ def train(
     model_loss = AELoss(
         criterion=cfg.loss.error,
         weights=AE_weights
-    )
-    grid_mask = ae.module.polar_mask    
+    )   
 
     if rank == 0:
         update_steps = trange(start_step, cfg.train.update_steps, ncols=88, ascii=True)
@@ -315,6 +315,35 @@ def train(
 
     dist.barrier()
 
+    def prepare_batch(batch: tuple[torch.Tensor, ...]):
+        if len(batch) == 3:
+            state, context, timestamp = batch
+            forcing = None
+        elif len(batch) == 4:
+            state, context, timestamp, forcing = batch
+        else:
+            raise ValueError(f"Expected 3 or 4 batch tensors, got {len(batch)}")
+
+        protocol = data_configs.rearange_protocol
+        target = rearrange(state.to(device, non_blocking=True), protocol)
+        context = rearrange(context.to(device, non_blocking=True), protocol)
+        timestamp = rearrange(
+            timestamp.to(device, non_blocking=True), "B T D -> (B T) D"
+        )
+
+        valid = torch.isfinite(target)
+        loss_mask = valid & ae.module.polar_mask[None, :, None]
+        state = torch.where(valid, target, 0.0)
+        context = torch.where(torch.isfinite(context), context, 0.0)
+
+        if forcing is not None:
+            forcing = rearrange(forcing.to(device, non_blocking=True), protocol)
+            forcing = torch.where(torch.isfinite(forcing), forcing, 0.0)
+
+        return state, context, timestamp, forcing, target, loss_mask
+
+            
+
     for step in update_steps:
         start = time.time()
 
@@ -328,23 +357,7 @@ def train(
 
         for acc_step in range(grad_acc_steps):
             batch = next(train_iter)
-            if len(batch) == 3:
-                state, context, timestamp = batch
-                forcing = None
-            elif len(batch) == 4:
-                state, context, timestamp, forcing = batch
-
-            state = rearrange(
-                state.to(device, non_blocking=True), data_configs.rearange_protocol
-            )
-            context = rearrange(
-                context.to(device, non_blocking=True), data_configs.rearange_protocol
-            )
-            if forcing is not None:
-                forcing = rearrange(
-                    forcing.to(device, non_blocking=True), data_configs.rearange_protocol
-                )
-            timestamp = rearrange(timestamp.to(device, non_blocking=True), "B T D -> (B T) D")
+            state, context, timestamp, forcing, target, loss_mask = prepare_batch(batch)
 
             # Forward
             with torch.autocast(device_type="cuda", dtype=precision):
@@ -355,7 +368,7 @@ def train(
                     with ae.no_sync():
                         z, x = ae(state, timestamp, context, forcing)
                 
-                loss = model_loss(x, state, grid_mask) + cfg.loss.l2_weight * (z**2).mean()
+                loss = model_loss(x, target, loss_mask) + cfg.loss.l2_weight * (z**2).mean()
 
             # Backward
             if acc_step + 1 == grad_acc_steps:
@@ -420,41 +433,23 @@ def train(
                 surf_errors = []
                 depth_errors = []
                 for batch in valid_quant_loader:
-                    if len(batch) == 3:
-                        state, context, timestamp = batch
-                        forcing = None
-                    elif len(batch) == 4:
-                        state, context, timestamp, forcing = batch
-
-                    state = rearrange(state, data_configs.rearange_protocol).to(
-                        device, non_blocking=True
-                    )
-                    context = rearrange(context, data_configs.rearange_protocol).to(
-                        device, non_blocking=True
-                    )
-                    if forcing is not None:
-                        forcing = rearrange(forcing, data_configs.rearange_protocol).to(
-                            device, non_blocking=True
-                        )
-                    timestamp = rearrange(
-                        timestamp.to(device, non_blocking=True), "B T D -> (B T) D"
-                    )
+                    state, context, timestamp, forcing, target, loss_mask = prepare_batch(batch)
 
                     with torch.autocast(
                         device_type="cuda",
                         dtype=precision,
                     ):
                         _, x = ae(state, timestamp, context, forcing)
-                        loss = model_loss(state, x, grid_mask)
-                        mask = grid_mask.to(device=x.device, dtype=torch.bool)
-                        rmse = torch.sqrt((x[:, mask, :] - state[:, mask, :]).square().mean(dim=1)).mean(dim=0)
+                        loss = model_loss(x, target, loss_mask)
+                        mask = loss_mask.to(device=x.device, dtype=torch.bool)
+                        rmse = torch.sqrt((x[:, mask, :] - target[:, mask, :]).square().mean(dim=1)).mean(dim=0)
                         surf_error = rmse[: len(SURFACE_VARIABLES)]
                         depth_error = rmse[len(SURFACE_VARIABLES):]
                     valid_losses.append(loss)
                     surf_errors.append(surf_error)
                     depth_errors.append(depth_error)
 
-                    del x, state, context
+                    del x, state, context, target
 
                 valid_losses = torch.stack(valid_losses)
                 surf_errors = torch.stack(surf_errors)
@@ -465,25 +460,7 @@ def train(
                 snapshots = []
                 dates = []
                 for batch in valid_quali_loader:
-                    if len(batch) == 3:
-                        data, context, timestamp = batch
-                        forcing = None
-                    elif len(batch) == 4:
-                        data, context, timestamp, forcing = batch
-
-                    state = rearrange(
-                        data.to(device, non_blocking=True), data_configs.rearange_protocol
-                    ).nan_to_num()
-                    context = rearrange(
-                        context.to(device, non_blocking=True), data_configs.rearange_protocol
-                    ).nan_to_num()
-                    if forcing is not None:
-                        forcing = rearrange(
-                            forcing.to(device, non_blocking=True), data_configs.rearange_protocol
-                        ).nan_to_num()
-                    timestamp = rearrange(
-                        timestamp.to(device, non_blocking=True), "B T D -> (B T) D"
-                    )
+                    state, context, timestamp, forcing, target, loss_mask = prepare_batch(batch)
 
                     with torch.autocast(device_type="cuda", dtype=precision):
                         _, x = ae(state, timestamp, context, forcing)
@@ -495,17 +472,17 @@ def train(
                         Lon=data.shape[-1],
                         B=data.shape[0],
                     ).cpu()
-                    state = rearrange(
-                        state,
+                    target = rearrange(
+                        target,
                         data_configs.rearange_protocol_inverse,
                         Lon=data.shape[-1],
                         B=data.shape[0],
                     ).cpu()
-                    B, T = state.shape[:2]
-                    snapshot = torch.stack([state[:, 0, 0, :, :], x[:, 0, 0, :, :]], dim = 1).to(device) 
+                    B, T = target.shape[:2]
+                    snapshot = torch.stack([target[:, 0, 0, :, :], x[:, 0, 0, :, :]], dim = 1).to(device) 
                     snapshots.append(snapshot)
                     dates.append(timestamp.reshape(B, T, -1)[:, 0].to(device))
-                    del x, data, state
+                    del x, data, state, target
 
                 snapshots = torch.cat(snapshots)
                 dates = torch.cat(dates)
