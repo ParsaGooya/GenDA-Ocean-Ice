@@ -21,6 +21,7 @@ train:
   shuffle_training: true
   trajectory_size: 1
   sub_pressure_levels: false
+  fill_nans: false
 
 valid:
   log_interval: 16384
