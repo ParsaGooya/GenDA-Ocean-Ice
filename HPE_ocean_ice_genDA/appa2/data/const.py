@@ -2,77 +2,82 @@ r"""GLORYS constants."""
 
 # GLORYS (GenCast-based)
 GLORYS_DATE_START = "2010-01-01"
-GLORYS_DATE_END = "2026-12-31"
+GLORYS_DATE_END = "2023-12-31"
 GLORYS_RESOLUTION = (4320, 787) 
 TIME_INTERVAL = 1
 GLORYS_NUM_TOTAL_LEVELS = 22
-# GLORYS_NUM_COARSENED_LEVELS = 13
+
+
+ERA5_RESOLUTION = (1440, 721)
+ERA5_TIME_INTERVAL = 1
+ERA5_NUM_TOTAL_LEVELS = 37
+ERA5_NUM_COARSENED_LEVELS = 13
 
 # WeatherBench2
 # Buckets are available at https://console.cloud.google.com/storage/browser/weatherbench2/datasets/era5
-# GLORYS_AVAILABLE_CONFIGURATIONS = {
-#     (
-#         6,
-#         ERA5_NUM_COARSENED_LEVELS,
-#         64,
-#         32,
-#         False,
-#     ): "2023_01_10-6h-64x32_equiangular_conservative.zarr",
-#     (
-#         6,
-#         ERA5_NUM_COARSENED_LEVELS,
-#         64,
-#         32,
-#         True,
-#     ): "2022-6h-64x32_equiangular_with_poles_conservative.zarr",
-#     (6, ERA5_NUM_COARSENED_LEVELS, 64, 33, False): "2022-6h-64x33.zarr",
-#     (6, ERA5_NUM_COARSENED_LEVELS, 128, 64, False): "2022-6h-128x64_equiangular_conservative.zarr",
-#     (
-#         6,
-#         ERA5_NUM_COARSENED_LEVELS,
-#         128,
-#         64,
-#         True,
-#     ): "2022-6h-128x64_equiangular_with_poles_conservative.zarr",
-#     (
-#         6,
-#         ERA5_NUM_COARSENED_LEVELS,
-#         240,
-#         121,
-#         True,
-#     ): "2023_01_10-6h-240x121_equiangular_with_poles_conservative.zarr",
-#     (
-#         6,
-#         ERA5_NUM_COARSENED_LEVELS,
-#         512,
-#         256,
-#         False,
-#     ): "2022-6h-512x256_equiangular_conservative.zarr",
-#     (6, ERA5_NUM_COARSENED_LEVELS, 1440, 721, True): "2023_01_10-wb13-6h-1440x721.zarr",
-#     (6, ERA5_NUM_TOTAL_LEVELS, 1440, 721, True): "2022-full_37-6h-0p25deg-chunk-1.zarr-v2/",
-#     (
-#         1,
-#         ERA5_NUM_COARSENED_LEVELS,
-#         240,
-#         121,
-#         True,
-#     ): "2023_01_10-1h-240x121_equiangular_with_poles_conservative.zarr",
-#     (
-#         1,
-#         ERA5_NUM_COARSENED_LEVELS,
-#         360,
-#         181,
-#         True,
-#     ): "2022-1h-360x181_equiangular_with_poles_conservative.zarr",
-#     (
-#         1,
-#         ERA5_NUM_TOTAL_LEVELS,
-#         512,
-#         256,
-#         False,
-#     ): "2023_01_10-full_37-1h-512x256_equiangular_conservative.zarr",
-#     (1, ERA5_NUM_TOTAL_LEVELS, 1440, 721, True): "2022-full_37-1h-0p25deg-chunk-1.zarr-v2",
-# }
+ERA5_AVAILABLE_CONFIGURATIONS = {
+    (
+        6,
+        ERA5_NUM_COARSENED_LEVELS,
+        64,
+        32,
+        False,
+    ): "2023_01_10-6h-64x32_equiangular_conservative.zarr",
+    (
+        6,
+        ERA5_NUM_COARSENED_LEVELS,
+        64,
+        32,
+        True,
+    ): "2022-6h-64x32_equiangular_with_poles_conservative.zarr",
+    (6, ERA5_NUM_COARSENED_LEVELS, 64, 33, False): "2022-6h-64x33.zarr",
+    (6, ERA5_NUM_COARSENED_LEVELS, 128, 64, False): "2022-6h-128x64_equiangular_conservative.zarr",
+    (
+        6,
+        ERA5_NUM_COARSENED_LEVELS,
+        128,
+        64,
+        True,
+    ): "2022-6h-128x64_equiangular_with_poles_conservative.zarr",
+    (
+        6,
+        ERA5_NUM_COARSENED_LEVELS,
+        240,
+        121,
+        True,
+    ): "2023_01_10-6h-240x121_equiangular_with_poles_conservative.zarr",
+    (
+        6,
+        ERA5_NUM_COARSENED_LEVELS,
+        512,
+        256,
+        False,
+    ): "2022-6h-512x256_equiangular_conservative.zarr",
+    (6, ERA5_NUM_COARSENED_LEVELS, 1440, 721, True): "2023_01_10-wb13-6h-1440x721.zarr",
+    (6, ERA5_NUM_TOTAL_LEVELS, 1440, 721, True): "2022-full_37-6h-0p25deg-chunk-1.zarr-v2/",
+    (
+        1,
+        ERA5_NUM_COARSENED_LEVELS,
+        240,
+        121,
+        True,
+    ): "2023_01_10-1h-240x121_equiangular_with_poles_conservative.zarr",
+    (
+        1,
+        ERA5_NUM_COARSENED_LEVELS,
+        360,
+        181,
+        True,
+    ): "2022-1h-360x181_equiangular_with_poles_conservative.zarr",
+    (
+        1,
+        ERA5_NUM_TOTAL_LEVELS,
+        512,
+        256,
+        False,
+    ): "2023_01_10-full_37-1h-512x256_equiangular_conservative.zarr",
+    (1, ERA5_NUM_TOTAL_LEVELS, 1440, 721, True): "2023_01_10-full_37-1h-0p25deg-chunk-1.zarr",
+}
 
 # fmt: off
 GLORYS_DEPTH_LEVELS = [
