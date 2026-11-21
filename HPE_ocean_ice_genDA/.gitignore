@@ -3,6 +3,8 @@
 !.pixi/config.toml
 *.egg-info/
 
+.dawgz/*
+
 __pycache__/
 *.py[cod]
 
