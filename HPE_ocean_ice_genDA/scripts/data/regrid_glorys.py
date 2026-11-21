@@ -1,7 +1,7 @@
 """Smooth and subsample regular 1/12° GLORYS NetCDF files."""
 
 from pathlib import Path
-from tempfile import NamedTemporaryFile
+from tempfile import TemporaryDirectory
 
 from dawgz import job, schedule
 from collections import defaultdict
@@ -74,6 +74,7 @@ def smooth_glorys(
     local_length_scales_file: Path | str | None = None,
     local_length_scale_variable: str = "length_scale",
     filter_type: str = "gaussian",
+    mask_reference: xr.Dataset | None = None,
 ) -> xr.Dataset:
     """Smooth horizontally using a scale in meters or in native grid intervals."""
     try:
@@ -139,7 +140,11 @@ def smooth_glorys(
         if not set(dims).issubset(data.dims) or not np.issubdtype(data.dtype, np.floating):
             continue
 
-        first = data.isel(time=0, drop=True) if "time" in data.dims else data
+        first = data
+        if "time" in data.dims:
+            first = (
+                data.isel(time=0, drop=True) if mask_reference is None else mask_reference[name]
+            )
         field = data.pad(padding, mode="edge")
         wet_mask = first.notnull().astype("int8").pad(padding, mode="constant", constant_values=0)
         wet_mask = wet_mask.assign_coords({dim: field[dim] for dim in padding})
@@ -178,7 +183,10 @@ def main(
          output_dir: Path, 
          input_dir: Path,
          MIN_LAT: float | None,
+         time_batch_size: int = 7,
 ):
+    if time_batch_size < 1:
+        raise ValueError("time_batch_size must be positive.")
 
     for source in sources:
         destination = output_dir / source.relative_to(input_dir)
@@ -188,37 +196,62 @@ def main(
             print(f"Skipped {source.relative_to(input_dir)} ...", flush=True)
             continue
 
-        print(f"Start regridding {source.relative_to(input_dir)} ...")
+        print(f"Start regridding {source.relative_to(input_dir)} ...", flush=True)
 
-        with xr.open_dataset(source, chunks={}) as ds:
-            
-            smoothed = smooth_glorys(
-                ds,
-                filtering_method,
-                spatial_filter_scale=spatial_filter_scale,
-                num_filter_grids=num_filter_grids,
-                local_length_scales_file=local_length_scales_file,
-                local_length_scale_variable=local_length_scale_variable,
-                filter_type=filter_type,
-            )
-            coarse = smoothed.isel({
-                dim: slice(None, None, subsample_stride)
-                for dim in horizontal_dimensions(ds)
-            })
+        with (
+            xr.open_dataset(source, chunks={}) as ds,
+            TemporaryDirectory(dir=destination.parent) as work,
+            dask.config.set(scheduler="single-threaded"),
+        ):
+            latitude, longitude = horizontal_dimensions(ds)
+            has_time = "time" in ds.dims
+            count = ds.sizes.get("time", 1)
+            if count == 0:
+                raise ValueError(f"No time records in {source}")
+            # Every batch uses the original first record for the filter's wet mask.
+            reference = ds.isel(time=0, drop=True) if has_time else None
+            batch_paths = []
+            for start in range(0, count, time_batch_size):
+                stop = min(start + time_batch_size, count)
+                print(f"  Processing records {start + 1}–{stop} of {count}", flush=True)
+                batch = ds.isel(time=slice(start, stop)) if has_time else ds
+                smoothed = smooth_glorys(
+                    batch,
+                    filtering_method,
+                    spatial_filter_scale=spatial_filter_scale,
+                    num_filter_grids=num_filter_grids,
+                    local_length_scales_file=local_length_scales_file,
+                    local_length_scale_variable=local_length_scale_variable,
+                    filter_type=filter_type,
+                    mask_reference=reference,
+                )
+                coarse = smoothed.isel({
+                    dim: slice(None, None, subsample_stride) for dim in (latitude, longitude)
+                })
+                if MIN_LAT is not None:
+                    coarse = coarse.sel({latitude: slice(MIN_LAT, None)})
 
-            if MIN_LAT is not None:
-                latitude = horizontal_dimensions(ds)[0]
-                coarse = coarse.sel({latitude: slice(MIN_LAT, None)})
+                batch_path = Path(work) / f"batch-{start}.part"
+                coarse.to_netcdf(batch_path, engine="netcdf4")
+                batch_paths.append(batch_path)
 
-            with NamedTemporaryFile(dir=destination.parent, suffix=".nc", delete=False) as temp:
-                temporary_path = Path(temp.name)
-            try:
-                with dask.config.set(scheduler="single-threaded"):
-                    coarse.to_netcdf(temporary_path)
-                temporary_path.replace(destination)
-            finally:
-                temporary_path.unlink(missing_ok=True)
-            print(f"{source} -> {destination}", flush=True)
+            temporary_path = batch_paths[0]
+            if len(batch_paths) > 1:
+                # The final write reads the already-filtered coarse batches.
+                temporary_path = Path(work) / "combined.part"
+                with xr.open_mfdataset(
+                    batch_paths,
+                    engine="netcdf4",
+                    combine="nested",
+                    concat_dim="time",
+                    data_vars="minimal",
+                    coords="minimal",
+                    compat="override",
+                    join="exact",
+                ) as combined:
+                    combined.to_netcdf(temporary_path, engine="netcdf4")
+            temporary_path.replace(destination)
+        print(f"{source} -> {destination}", flush=True)
 
 
 if __name__ == "__main__":
@@ -231,6 +264,7 @@ if __name__ == "__main__":
     local_length_scales_file = Path("/path/to/local_length_scales.nc")
     local_length_scale_variable = "length_scale"  # 2D, in meters
     subsample_stride = 3  # Native grid intervals per output grid interval.
+    time_batch_size = 7  # Daily records per filtering batch.
     MIN_LAT: float | None = 25.0
 
 
@@ -283,6 +317,7 @@ if __name__ == "__main__":
             output_dir,
             input_dir,
             MIN_LAT,
+            time_batch_size,
         )
 
         jobs.append(
