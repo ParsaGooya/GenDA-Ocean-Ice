@@ -13,5 +13,5 @@ hardware:
   job:
     cpus: 8
     ram: 16GB
-    time: "2:00:00"
+    time: "12:00:00"
     partition: parry
