@@ -215,7 +215,9 @@ class GlorysDataset(Dataset):
     """Read daily variable/year NetCDF archives using a metadata-only time index.
 
     Files may be supplied individually, as sequences, or as directories searched
-    recursively. Each group path defaults to state_variables_path. Coordinates
+    recursively. Surface, depth, and context paths default to
+    state_variables_path. Forcing variables require an explicit forcing_path.
+    Coordinates
     must be named time, longitude, latitude and optionally depth. Dates are
     inclusive; every dynamic variable must cover every requested day exactly once.
     Noon-labelled daily means are normalized to days; subdaily duplicates fail.
@@ -311,6 +313,8 @@ class GlorysDataset(Dataset):
             if not ordered:
                 continue
             if source is None:
+                if group == "forcing":
+                    raise ValueError("forcing_path is required when forcing_variables is nonempty.")
                 self.variables_to_load_from_shared_path.extend(ordered)
             for path in self._discover_files(state_variables_path if source is None else source):
                 routes.setdefault(path, []).extend(ordered)
