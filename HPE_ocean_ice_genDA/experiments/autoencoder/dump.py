@@ -11,11 +11,11 @@ import torch
 import wandb
 
 from dawgz import after, job, schedule
+from datetime import date, timedelta
 from einops import rearrange
 from omegaconf import OmegaConf
 from pathlib import Path
 
-from appa2.config import PATH_ERA5, PATH_STAT
 from appa2.config.hydra import compose
 from appa2.data.const import (
     CONTEXT_VARIABLES,
@@ -30,14 +30,13 @@ from appa2.data.data_config import get_dataset_specs
 from appa2.data.dataloaders import get_dataloader
 from appa2.data.datasets import ERA5Dataset
 from appa2.data.transforms import StandardizeTransform
-from appa2.date import split_interval
+from appa2.date import split_daily_interval
 from appa2.save import load_auto_encoder
 
 
 def dump_to_latent(config):
-    num_chunks = config.num_chunks
     start_date = config.get("start_date")
-    end_date = config.get("start_date")
+    end_date = config.get("end_date")
 
     model_path = Path(config.model_path)
     use_best = config.checkpoint == "best"
@@ -59,11 +58,17 @@ def dump_to_latent(config):
     data_configs = get_dataset_specs(train_config.grids.main) 
     hardware_cfg = config.hardware
 
+    has_forcing = train_config.grids.get("forcing", None) is not None
+    FORCING_VARIABLES = ATM_FORCING_VARIABLES if has_forcing else []
 
-    if (start_date is None or end_date is None):
-        start_date, end_date = data_configs.time_splits[0]
+    train_start, train_end = data_configs.time_splits[0]
+    if start_date is None:
+        start_date = train_start
+    if end_date is None:
+        end_date = train_end
 
-    time_intervals = split_interval(num_chunks, start_date, end_date)
+    time_intervals = split_daily_interval(config.num_chunks, start_date, end_date)
+    num_chunks = len(time_intervals)
 
     @job(
         name="appa dump (chunk)",
@@ -74,7 +79,7 @@ def dump_to_latent(config):
     def dump_chunk(rank: int):
         dask.config.set(scheduler="synchronous")
 
-        time_interval = time_intervals[rank]
+        chunk_start, chunk_end = time_intervals[rank]
 
         st_state = StandardizeTransform(
             data_configs.path_stat_state,
@@ -84,24 +89,26 @@ def dump_to_latent(config):
             depth_dim_name=data_configs.depth_dim_name
         )
 
-        # st_forcing = StandardizeTransform(
-        #     data_configs.path_stat_forcing,
-        #     state_variables=ATM_FORCING_VARIABLES,
-        #     depths=data_configs.depth_levels,
-            # depth_dim_name=data_configs.depth_dim_name
-        # )
+        if has_forcing:
+            st_forcing = StandardizeTransform(
+                data_configs.path_stat_forcing,
+                state_variables=FORCING_VARIABLES,
+                depths=data_configs.depth_levels,
+                depth_dim_name=data_configs.depth_dim_name
+            )
 
         dataset = data_configs.dataset(
                     state_variables_path=data_configs.state_variables_path,
-                    start_date=time_interval[0],
-                    end_date=time_interval[1],
+                    start_date=chunk_start,
+                    end_date=chunk_end,
+                    trajectory_size=1,
                     transform=st_state,
                     surface_variables= SURFACE_VARIABLES,
                     depth_variables= OCEAN_VARIABLES,
-                    forcing_variables= ATM_FORCING_VARIABLES,
+                    forcing_variables= FORCING_VARIABLES,
                     context_variables= CONTEXT_VARIABLES,
                     forcing_path = data_configs.forcing_path,
-                    # forcing_transform=st_forcing,
+                    forcing_transform=st_forcing if has_forcing else None,
                     depths=data_configs.depth_levels,
                     fill_nans=False,
                 )
@@ -125,15 +132,15 @@ def dump_to_latent(config):
                 latent_state_shape[2],
             )
 
+        num_rows = len(dataset)
         len_dl = len(dataloader)
 
         print("Total dataset size:", len(dataset), flush=True)
         print("Local chunk size:", len_dl, flush=True)
 
         dump_tmp_file = h5py.File(output_path / f"tmp/{rank}.h5", "w")
-        dump_tmp_file.create_dataset("latents", (len_dl, *latent_state_shape), "float32")
-        dump_tmp_file.create_dataset("forcings", (len_dl, *latent_state_shape), "float32")
-        dump_tmp_file.create_dataset("dates", (len_dl, 4), "int32")
+        dump_tmp_file.create_dataset("latents", (num_rows, *latent_state_shape), "float32")
+        dump_tmp_file.create_dataset("dates", (num_rows, 4), "int32")
 
         dumped_states = []
         dumped_forcings = []
@@ -144,11 +151,16 @@ def dump_to_latent(config):
         def save_progress():
             nonlocal curr_idx, dumped_states, dumped_forcings, timestamps, start_time
 
+            if not dumped_states:
+                return
+
             dumped_states = np.concatenate(dumped_states, axis=0)
-            dumped_forcings = np.concatenate(dumped_forcings, axis=0)
+            if has_forcing:
+                dumped_forcings = np.concatenate(dumped_forcings, axis=0)
             timestamps = np.concatenate(timestamps, axis=0)
             dump_tmp_file["latents"][curr_idx : curr_idx + len(dumped_states)] = dumped_states
-            dump_tmp_file["forcings"][curr_idx : curr_idx + len(dumped_forcings)] = dumped_forcings
+            if has_forcing:
+                dump_tmp_file["forcings"][curr_idx : curr_idx + len(dumped_forcings)] = dumped_forcings
             dump_tmp_file["dates"][curr_idx : curr_idx + len(dumped_states)] = timestamps
             curr_idx += len(dumped_states)
 
@@ -157,13 +169,49 @@ def dump_to_latent(config):
             timestamps = []
             gc.collect()
 
-        for idx, batch in enumerate(dataloader):
-            state, context, date, forcing, _, _ = train.prepare_batch(batch)
 
-            z, f = autoencoder.encode(state, date, context, forcing)
+        def prepare_batch(batch: tuple[torch.Tensor, ...]):
+            if len(batch) == 3:
+                state, context, timestamp = batch
+                forcing = None
+            elif len(batch) == 4:
+                state, context, timestamp, forcing = batch
+            else:
+                raise ValueError(f"Expected 3 or 4 batch tensors, got {len(batch)}")
+
+            protocol = data_configs.rearange_protocol
+            target = rearrange(state.to("cuda", non_blocking=True), protocol)
+            context = rearrange(context.to("cuda", non_blocking=True), protocol)
+            timestamp = rearrange(
+                timestamp.to("cuda", non_blocking=True), "B T D -> (B T) D"
+            )
+
+            valid = torch.isfinite(target)
+            state = torch.where(valid, target, 0.0)
+            context = torch.where(torch.isfinite(context), context, 0.0)
+
+            if forcing is not None:
+                forcing = rearrange(forcing.to("cuda", non_blocking=True), protocol)
+                forcing = torch.where(torch.isfinite(forcing), forcing, 0.0)
+
+            return state, context, timestamp, forcing
+
+        for idx, batch in enumerate(dataloader):
+            state, context, date, forcing = prepare_batch(batch)
+
+            z, ff = autoencoder.encode(state, 
+                                      date, 
+                                      context, 
+                                      forcing, 
+                                      return_forcing_features=True)
 
             dumped_states.append(z.cpu().numpy())
-            dumped_forcings.append(f.cpu().numpy())
+            if has_forcing:
+                # The final forcing features are on the latent mesh.
+                f = ff[-1]
+                if idx == 0:
+                    dump_tmp_file.create_dataset("forcings", (num_rows, *f.shape[1:]), "float32")
+                dumped_forcings.append(f.cpu().numpy())
             timestamps.append(date.cpu().numpy())
 
             if (idx + 1) % log_every == 0:
@@ -179,6 +227,8 @@ def dump_to_latent(config):
 
         save_progress()
         dump_tmp_file.close()
+        if curr_idx != num_rows:
+            raise ValueError(f"Shard {rank} expected {num_rows} daily rows but wrote {curr_idx}.")
 
     @after(dump_chunk)
     @job(
@@ -186,76 +236,71 @@ def dump_to_latent(config):
         **hardware_cfg.aggregate,
     )
     def aggregate():
+        fields = {"latents": "float32", "dates": "int32"}
+        if has_forcing:
+            fields["forcings"] = "float32"
 
-        dataset = data_configs.dataset(
-                    state_variables_path=data_configs.state_variables_path,
-                    start_date=start_date,
-                    end_date=end_date,
-                    surface_variables= SURFACE_VARIABLES,
-                    depth_variables= OCEAN_VARIABLES,
-                    forcing_variables= ATM_FORCING_VARIABLES,
-                    context_variables= CONTEXT_VARIABLES,
-                    forcing_path = data_configs.forcing_path,
-                    depths=[],
-                    fill_nans=False,
-                )
-        total_num_samples = len(dataset)
+        shard_rows = []
+        sample_shapes = {}
+        for rank, (chunk_start, chunk_end) in enumerate(time_intervals):
+            first_day = date.fromisoformat(chunk_start)
+            last_day = date.fromisoformat(chunk_end)
+            expected_rows = (last_day - first_day).days + 1
+            expected_dates = []
+            for offset in range(expected_rows):
+                day = first_day + timedelta(days=offset)
+                expected_dates.append([day.year, day.month, day.day, 0])
 
-        # TODO: Function to compute shape from AE config alone.
-        autoencoder = load_auto_encoder(output_path / "ae", model_name="model")
-        latent_state_shape = autoencoder.latent_shape
-        if len(latent_state_shape) == 3:
-            latent_state_shape = (
-                latent_state_shape[0] * latent_state_shape[1],
-                latent_state_shape[2],
-            )
-        del autoencoder
+            with h5py.File(output_path / f"tmp/{rank}.h5", "r") as shard:
+                for key in fields:
+                    field = shard[key]
+                    if field.ndim == 0 or field.shape[0] != expected_rows:
+                        raise ValueError(
+                            f"Shard {rank} expected {expected_rows} rows for {key}, "
+                            f"but found shape {field.shape}."
+                        )
+                    shape = field.shape[1:]
+                    expected_shape = sample_shapes.setdefault(key, shape)
+                    if shape != expected_shape:
+                        raise ValueError(
+                            f"Shard {rank} expected {key} row shape {expected_shape}, "
+                            f"but found {shape}."
+                        )
 
-        dump_tmp_file = h5py.File(output_path / config.dump_name, "w")
-        dump_tmp_file.create_dataset(
-            "latents", (total_num_samples, *latent_state_shape), "float32"
-        )
-        dump_tmp_file.create_dataset(
-            "forcings", (total_num_samples, *latent_state_shape), "float32"
-        )
-        dump_tmp_file.create_dataset("dates", (total_num_samples, 4), "int32")
+                if not np.array_equal(shard["dates"][:], expected_dates):
+                    raise ValueError(
+                        f"Shard {rank} dates do not match {chunk_start} through {chunk_end}."
+                    )
+                shard_rows.append(shard["latents"].shape[0])
 
-        curr_idx = 0
+        final_path = output_path / config.dump_name
+        partial_path = final_path.with_name(final_path.name + ".partial")
+        total_rows = sum(shard_rows)
+        with h5py.File(partial_path, "w") as merged:
+            for key, dtype in fields.items():
+                merged.create_dataset(key, (total_rows, *sample_shapes[key]), dtype=dtype)
 
-        for rank in range(num_chunks):
-            dump_tmp_file_chunk = h5py.File(output_path / f"tmp/{rank}.h5", "r")
+            offset = 0
+            for rank, rows in enumerate(shard_rows):
+                with h5py.File(output_path / f"tmp/{rank}.h5", "r") as shard:
+                    for start in range(0, rows, config.batch_size):
+                        stop = min(start + config.batch_size, rows)
+                        for key in fields:
+                            merged[key][offset + start : offset + stop] = shard[key][start:stop]
+                offset += rows
 
-            latents = dump_tmp_file_chunk["latents"][:]
-            forcings = dump_tmp_file_chunk["forcings"][:]
-            dates = dump_tmp_file_chunk["dates"][:]
-
-            print(f"Chunk {rank} shape: {latents.shape}, {forcings.shape}, {dates.shape}", flush=True)
-
-            num_samples_chunk = latents.shape[0]
-
-            # Truncate last chunk, if necessary.
-            num_samples_chunk = min(num_samples_chunk, total_num_samples - curr_idx)
-            latents = latents[:num_samples_chunk]
-            forcings = forcings[:num_samples_chunk]
-            dates = dates[:num_samples_chunk]
-
-            dump_tmp_file["latents"][curr_idx : curr_idx + num_samples_chunk] = latents
-            dump_tmp_file["forcings"][curr_idx : curr_idx + num_samples_chunk] = forcings
-            dump_tmp_file["dates"][curr_idx : curr_idx + num_samples_chunk] = dates
-            curr_idx += num_samples_chunk
-
-        print(dump_tmp_file["latents"].shape, dump_tmp_file["forcings"].shape, dump_tmp_file["dates"].shape, flush=True)
-
-        dump_tmp_file.close()
-
+        partial_path.replace(final_path)
         shutil.rmtree(output_path / "tmp")
+
+    options = {"export": "ALL"}
+    if config.hardware.get("account") is not None:
+        options["account"] = config.hardware["account"]
 
     schedule(
         aggregate,
         name="appa dump",
-        export="ALL",
-        account=config.hardware.account,
         backend=config.hardware.backend,
+        **options
     )
 
 

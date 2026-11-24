@@ -3,8 +3,9 @@ dump_name: "glorys-era5.h5"
 
 checkpoint: last  # or best
 
-start_date: 1993-01-01
-end_date: 2021-12-31
+# Unset endpoints default to the dataset's training split.
+start_date: null
+end_date: null
 
 batch_size: 1
 num_chunks: 40

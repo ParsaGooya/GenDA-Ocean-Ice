@@ -259,3 +259,31 @@ def split_interval(
         split_intervals.append((start_date, end_date, start_hour, end_hour))
 
     return split_intervals
+
+
+def split_daily_interval(
+    nb_splits: int, start_date: str, end_date: str
+) -> list[tuple[str, str]]:
+    """Split an inclusive YYYY-MM-DD range into balanced, nonempty daily intervals."""
+    if isinstance(nb_splits, bool) or not isinstance(nb_splits, int) or nb_splits < 1:
+        raise ValueError("The number of splits must be a positive integer.")
+
+    start = datetime.strptime(start_date, "%Y-%m-%d").date()
+    end = datetime.strptime(end_date, "%Y-%m-%d").date()
+    if start.isoformat() != start_date or end.isoformat() != end_date:
+        raise ValueError("Daily dates must have YYYY-MM-DD format.")
+    if start > end:
+        raise ValueError("start_date must be on or before end_date.")
+
+    num_days = (end - start).days + 1
+    num_splits = min(nb_splits, num_days)
+    days_per_split, extra_days = divmod(num_days, num_splits)
+    intervals = []
+    offset = 0
+    for index in range(num_splits):
+        size = days_per_split + (index < extra_days)
+        first_day = start + timedelta(days=offset)
+        last_day = start + timedelta(days=offset + size - 1)
+        intervals.append((first_day.isoformat(), last_day.isoformat()))
+        offset += size
+    return intervals
