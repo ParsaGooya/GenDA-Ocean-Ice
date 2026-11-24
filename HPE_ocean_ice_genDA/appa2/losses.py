@@ -28,12 +28,14 @@ def get_area_weights(grid: SUPPORTED_GRIDS) -> Tensor:
     For ORG, curvilinear riops or other unequal grids, supply actual cell areas
     to get_weights instead. No normalization or artificial pole offset is used.
     """
-    
-    coords, _ =  create_original_grid(grid)
-    # Double precision avoids negative float32 cosine values at the poles.
-    areas = torch.deg2rad(coords[:, 0].double()).cos().clamp_min(0)
-    areas = torch.where(coords[:, 0].abs() == 90, 0., areas)
-    return areas.float()
+    if grid in ['riops']:
+        raise NotImplementedError
+    else:
+        coords, _ =  create_original_grid(grid)
+        # Double precision avoids negative float32 cosine values at the poles.
+        areas = torch.deg2rad(coords[:, 0].double()).cos().clamp_min(0)
+        areas = torch.where(coords[:, 0].abs() == 90, 0., areas)
+        return areas.float()
 
 
 def get_weights(
