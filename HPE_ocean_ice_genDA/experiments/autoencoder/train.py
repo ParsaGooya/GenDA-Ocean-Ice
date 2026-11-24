@@ -93,6 +93,8 @@ def train(
     #(
      #   SUB_PRESSURE_LEVELS if cfg.train.sub_pressure_levels else GLORYS_DEPTH_LEVELS
     #)
+    has_forcing = cfg.grids.get("forcing", None) is not None
+    FORCING_VARIABLES = ATM_FORCING_VARIABLES if has_forcing else []
 
     st_state = StandardizeTransform(
         data_configs.path_stat_state,
@@ -102,12 +104,13 @@ def train(
         depth_dim_name=data_configs.depth_dim_name
     )
 
-    # st_forcing = StandardizeTransform(
-    #     data_configs.path_stat_forcing,
-    #     state_variables=ATM_FORCING_VARIABLES,
-    #     depths=data_configs.depth_levels,
-        # depth_dim_name=data_configs.depth_dim_name
-    # )
+    if has_forcing:
+        st_forcing = StandardizeTransform(
+            data_configs.path_stat_forcing,
+            state_variables=FORCING_VARIABLES,
+            depths=data_configs.depth_levels,
+            depth_dim_name=data_configs.depth_dim_name
+        )
 
     fill_nans = cfg.train.get("fill_nans", False)
     datasets = [
@@ -120,10 +123,10 @@ def train(
             trajectory_size=cfg.train.trajectory_size,
             surface_variables= SURFACE_VARIABLES,
             depth_variables= OCEAN_VARIABLES,
-            forcing_variables= ATM_FORCING_VARIABLES,
+            forcing_variables= FORCING_VARIABLES,
             context_variables= CONTEXT_VARIABLES,
             forcing_path = data_configs.forcing_path,
-            # forcing_transform=st_forcing,
+            forcing_transform=st_forcing if has_forcing else None,
             depths=data_configs.depth_levels,
             fill_nans=fill_nans,
         )
@@ -154,7 +157,7 @@ def train(
             else 0
         )
         num_context_variables = len(CONTEXT_VARIABLES) if CONTEXT_VARIABLES else 0
-        num_forcing_variables = len(ATM_FORCING_VARIABLES) if ATM_FORCING_VARIABLES else 0
+        num_forcing_variables = len(FORCING_VARIABLES) if FORCING_VARIABLES else 0
         cfg.ae["in_channels"] = num_surface_variables + num_depth_variables
         cfg.ae["forcing_in_channels"] = num_forcing_variables
         cfg.ae["context_channels"] = num_context_variables

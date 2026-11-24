@@ -102,12 +102,12 @@ SURFACE_VARIABLES = [
     # "mlotst",
 ]
 
-ATM_FORCING_VARIABLES =  []#[
-#     "2m_temperature",
-#     "10m_u_component_of_wind",
-#     "10m_v_component_of_wind",
-#     "total_precipitation",
-# ]
+ATM_FORCING_VARIABLES = [
+    "2m_temperature",
+    "10m_u_component_of_wind",
+    "10m_v_component_of_wind",
+    "total_precipitation",
+]
 
 OCEAN_VARIABLES = [
     "thetao",

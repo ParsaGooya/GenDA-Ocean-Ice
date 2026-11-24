@@ -7,7 +7,7 @@ from appa2.data.const import (
 )
 from appa2.config import (
     PATH_GLORYS,
-    PATH_GLORYS_FORING,
+    PATH_ERA5_FORCING,
     PATH_GLORYS_STAT_FORCING,
     PATH_GLORYS_STAT_STATE,
     PATH_GLORYS_BATHYMETRY,
@@ -75,9 +75,9 @@ def get_dataset_specs(starting_grid: SUPPORTED_GRIDS):
             rearange_protocol= "B T Z Lat Lon -> (B T) (Lat Lon) Z",
             rearange_protocol_inverse= "(B T) (Lat Lon) Z -> B T Z Lat Lon",
             # bathymetry_path=PATH_GLORYS_BATHYMETRY,
-            # forcing_path = PATH_GLORYS_STAT_FORCING,
-            # path_stat_state = PATH_GLORYS_STAT_STATE,
-            # path_stat_forcing= PATH_GLORYS_STAT_FORCING,
+            forcing_path = PATH_ERA5_FORCING,
+            path_stat_state = PATH_GLORYS_STAT_STATE,
+            path_stat_forcing= PATH_GLORYS_STAT_FORCING,
             depth_dim_name=GLORYS_DEPTH_DIM,
         )
     elif starting_grid == "riops":
