@@ -1,0 +1,47 @@
+model_path: ???  # /path/to/appa2/autoencoders/your_ae/lap
+id: valid
+
+checkpoint: last  # or best
+
+# Unset endpoints default to the dataset's test split.
+start_date: null
+end_date: null
+
+# Optional overrides for the dataset spec. Stats must be a NetCDF file or Zarr store.
+state_stats_path: null
+forcing_path: null
+forcing_stats_path: null
+
+batch_size: 1
+num_workers: 7
+num_chunks: 20
+delete_tmp: false  # delete tmp files after completion
+
+# Signed target-minus-prediction errors in source units.
+num_bins: 200
+bin_ranges:
+  zos: [-1, 1]
+  siconc: [-1, 1]
+  sithick: [-3, 3]
+  usi: [-0.5, 0.5]
+  vsi: [-0.5, 0.5]
+  thetao: [-5, 5]
+  so: [-5, 5]
+  uo: [-1, 1]
+  vo: [-1, 1]
+multipliers: {}
+
+hardware:
+  backend: slurm  # or async
+  latent_chunk:
+    cpus: 8
+    gpus: 1
+    ram: 60GB
+    time: "35:00"
+    partition: parry
+  aggregate:
+    cpus: 4
+    gpus: 0
+    ram: 60GB
+    time: "05:00"
+    partition: parry
