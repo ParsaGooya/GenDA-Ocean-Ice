@@ -3,7 +3,7 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from dawgz import job, schedule
+from dawgz import after, job, schedule
 from collections import defaultdict
 import dask
 import gcm_filters
@@ -320,13 +320,14 @@ if __name__ == "__main__":
             time_batch_size,
         )
 
-        jobs.append(
-            job(
-                dawgz_download,
-                name=f"glorys_regrid_{year}",
-                **hardware["job"],
-            )
+        year_job = job(
+            dawgz_download,
+            name=f"glorys_regrid_{year}",
+            **hardware["job"],
         )
+        if jobs:
+            year_job = after(jobs[-1], status="any")(year_job)
+        jobs.append(year_job)
 
     options = {"export": "ALL"}
     if hardware.get("account") is not None:
