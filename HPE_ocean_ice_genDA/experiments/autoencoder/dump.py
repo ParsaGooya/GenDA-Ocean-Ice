@@ -25,10 +25,9 @@ from appa2.data.const import (
     OCEAN_VARIABLES,
 )
 
-from experiments.autoencoder.train import train
+
 from appa2.data.data_config import get_dataset_specs
 from appa2.data.dataloaders import get_dataloader
-from appa2.data.datasets import ERA5Dataset
 from appa2.data.transforms import StandardizeTransform
 from appa2.date import split_daily_interval
 from appa2.save import load_auto_encoder
