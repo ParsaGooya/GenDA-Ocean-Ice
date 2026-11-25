@@ -157,13 +157,10 @@ def train(
             if OCEAN_VARIABLES and data_configs.depth_levels
             else 0
         )
-        num_context_channels = len(CONTEXT_VARIABLES) if CONTEXT_VARIABLES else 0
-        if "deptho" in CONTEXT_VARIABLES:
-            num_context_channels = datasets[0].context_channels
         num_forcing_variables = len(FORCING_VARIABLES) if FORCING_VARIABLES else 0
         cfg.ae["in_channels"] = num_surface_variables + num_depth_variables
         cfg.ae["forcing_in_channels"] = num_forcing_variables
-        cfg.ae["context_channels"] = num_context_channels
+        cfg.ae["context_channels"] = datasets[0].context_channels
         cfg.ae["starting_grid"] = data_configs.grid
         cfg.ae["forcing_grid"] = cfg.grids.get("forcing", None)
 
