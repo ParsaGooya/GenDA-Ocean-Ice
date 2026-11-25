@@ -457,6 +457,14 @@ class GlorysDataset(Dataset):
             return torch.empty((len(dates), 0, len(coords['latitude']), len(coords['longitude'])), dtype=torch.float32)
         return torch.from_numpy(np.concatenate(channels, axis=1))
 
+    @property
+    def context_channels(self) -> int:
+        """Return the number of context channels after depth selection."""
+        return sum(
+            len(self._coords[name]["depth"]) if "depth" in self._coords[name] else 1
+            for name in self.context_variables
+        )
+
     def __len__(self) -> int:
         """Return the number of complete trajectory starts."""
         return len(self._starts)
