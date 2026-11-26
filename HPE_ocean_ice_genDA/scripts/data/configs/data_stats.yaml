@@ -1,8 +1,8 @@
-data_path: era5
-output_path: ???
+state_grid: glorys
+output_path: null  # .nc for NetCDF, .zarr or no suffix for Zarr
 
-start_date: 1993-01-01
-end_date: 2021-12-31
+start_date: null
+end_date: null
 
 batch_size: 2
 num_chunks: 8

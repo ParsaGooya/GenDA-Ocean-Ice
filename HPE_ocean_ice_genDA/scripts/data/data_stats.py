@@ -12,40 +12,72 @@ from dawgz import after, job, schedule
 from omegaconf import OmegaConf
 from pathlib import Path
 
-from appa2.config import PATH_ERA5
 from appa2.config.hydra import compose
 from appa2.data.const import (
     CONTEXT_VARIABLES,
-    ERA5_ATMOSPHERIC_VARIABLES,
-    ERA5_PRESSURE_LEVELS,
-    ERA5_SURFACE_VARIABLES,
-    ERA5_VARIABLES,
+    ATM_FORCING_VARIABLES,
+    SURFACE_VARIABLES,
+    OCEAN_VARIABLES,
 )
+
 from appa2.data.dataloaders import get_dataloader
-from appa2.data.datasets import ERA5Dataset
-from appa2.date import split_interval
+from appa2.data.data_config import get_dataset_specs
+from appa2.date import split_daily_interval
+
+
+def channel_moments(values):
+    """Return finite counts, sums, and squared sums for each channel."""
+    values = values.cuda()
+    finite = torch.isfinite(values)
+    values = torch.where(finite, values, 0).double()
+    sample_dims = (0, 1, 3, 4)  # Batch, trajectory, latitude, longitude
+    return (
+        finite.sum(dim=sample_dims),
+        values.sum(dim=sample_dims),
+        values.square().sum(dim=sample_dims),
+    )
 
 
 def compute_statistics(config):
     num_chunks = config.num_chunks
-    output_path = Path(config.output_path)
+    data_configs = get_dataset_specs(config.state_grid)
+    output_path = Path(config.get("output_path") or data_configs.path_stat_state)
+    output_suffix = output_path.suffix.lower()
+    if output_suffix not in {"", ".nc", ".zarr"}:
+        raise ValueError("output_path must end in .nc or .zarr, or have no suffix for Zarr.")
     tmp_path = output_path.parent / "tmp"
     tmp_path.mkdir(parents=True, exist_ok=True)
 
-    time_intervals = split_interval(num_chunks, config.start_date, config.end_date)
+    start_date = config.get("start_date")
+    end_date = config.get("end_date")
+    train_start, train_end = data_configs.time_splits[0]
+    if start_date is None:
+        start_date = train_start
+    if end_date is None:
+        end_date = train_end
+
+    time_intervals = split_daily_interval(num_chunks, start_date, end_date)
+    num_chunks = len(time_intervals)
 
     @job(
-        name="appa2 era5 stats (chunk)",
+        name="appa2 train stats (chunk)",
         array=num_chunks,
         **config.hardware.chunk,
     )
     def compute_stats_chunk(rank: int):
-        dataset = ERA5Dataset(
-            config.data_path,
-            *time_intervals[rank],
-            state_variables=ERA5_VARIABLES,
-            context_variables=CONTEXT_VARIABLES,
-            levels=ERA5_PRESSURE_LEVELS,
+        chunk_start, chunk_end = time_intervals[rank]
+
+        dataset = data_configs.dataset(
+            state_variables_path=data_configs.state_variables_path,
+            start_date=chunk_start,
+            end_date=chunk_end,
+            trajectory_size=1,
+            surface_variables= SURFACE_VARIABLES,
+            depth_variables= OCEAN_VARIABLES,
+            forcing_variables= ATM_FORCING_VARIABLES,
+            context_variables= CONTEXT_VARIABLES,
+            forcing_path = data_configs.forcing_path,
+            depths=data_configs.depth_levels,
             fill_nans=False,
         )
 
@@ -59,82 +91,91 @@ def compute_statistics(config):
 
         len_dl = len(dataloader)
 
-        means = []
-        squares_means = []
+        num_channels = (
+            len(SURFACE_VARIABLES)
+            + len(OCEAN_VARIABLES) * len(data_configs.depth_levels)
+            + len(ATM_FORCING_VARIABLES)
+        )
+        valid_count = torch.zeros(num_channels, dtype=torch.int64, device="cuda")
+        sums = torch.zeros(num_channels, dtype=torch.float64, device="cuda")
+        sum_of_squares = torch.zeros_like(sums)
         start_time = time.time()
 
-        for idx, (data, context, _) in enumerate(dataloader):
-            data = torch.cat([data, context], dim=2).cuda()  # [batch, traj_size, channels, ...]
-            data_mean = data.nanmean(dim=(-1, -2))  # [batch, traj_size, channels]
-            data_squared_mean = (data**2).nanmean(dim=(-1, -2))  # [batch, traj_size, channels]
-
-            means.append(data_mean.cpu())
-            squares_means.append(data_squared_mean.cpu())
+        for idx, (data, _, _, forcing) in enumerate(dataloader):
+            state_moments = channel_moments(data)
+            forcing_moments = channel_moments(forcing)
+            counts, totals, squared_totals = (
+                torch.cat((state, atmosphere))
+                for state, atmosphere in zip(state_moments, forcing_moments)
+            )
+            valid_count += counts
+            sums += totals
+            sum_of_squares += squared_totals
 
             if idx % config.log_every == 0:
                 elapsed = time.time() - start_time
                 print(f"Chunk {rank}, Step {idx}/{len_dl}, Elapsed: {elapsed:.2f}s")
                 start_time = time.time()
 
-        means = torch.cat(means, dim=0)
-        squares_means = torch.cat(squares_means, dim=0)
-        means = means.mean(dim=0)[0]  # Take 0 as traj_size is set to 1 for stats.
-        squares_means = squares_means.mean(dim=0)[0]
-
         torch.save(
             {
-                "means": means,
-                "squares_means": squares_means,
+                "valid_count": valid_count.cpu(),
+                "sum": sums.cpu(),
+                "sum_of_squares": sum_of_squares.cpu(),
             },
             tmp_path / f"{rank}.pt",
         )
 
     @after(compute_stats_chunk)
     @job(
-        name="appa2 era5 stats (merge)",
+        name="appa2 train stats (merge)",
         **config.hardware.aggregate,
     )
     def aggregate():
-        means = []
-        squares_means = []
+        chunks = [
+            torch.load(tmp_path / f"{i}.pt", weights_only=True) for i in range(num_chunks)
+        ]
+        valid_count, sums, sum_of_squares = (
+            torch.stack([chunk[key] for chunk in chunks]).sum(dim=0)
+            for key in ("valid_count", "sum", "sum_of_squares")
+        )
+        if (valid_count == 0).any():
+            empty_channels = torch.where(valid_count == 0)[0].tolist()
+            raise ValueError(f"No finite values for stats channel indices {empty_channels}.")
 
-        for i in range(num_chunks):
-            stats = torch.load(tmp_path / f"{i}.pt", weights_only=True)
-            means.append(stats["means"])
-            squares_means.append(stats["squares_means"])
+        means = sums / valid_count
+        variance = (sum_of_squares / valid_count - means.square()).clamp_min(0)
+        stds = variance.sqrt().clamp_min(1e-32)
 
-        means = torch.stack(means, dim=0).mean(dim=0)
-        squares_means = torch.stack(squares_means, dim=0).mean(dim=0)
-        stds = (squares_means - means**2).sqrt().clip(min=1e-32)
+        means = means.float().numpy()
+        stds = stds.float().numpy()
 
-        means = means.numpy()
-        stds = stds.numpy()
-
-        num_surface_vars = len(ERA5_SURFACE_VARIABLES)
-        num_atmospheric_vars = len(ERA5_ATMOSPHERIC_VARIABLES)
-        num_levels = len(ERA5_PRESSURE_LEVELS)
-        num_context_vars = len(CONTEXT_VARIABLES)
+        num_surface_vars = len(SURFACE_VARIABLES)
+        num_ocean_vars = len(OCEAN_VARIABLES)
+        num_levels = len(data_configs.depth_levels)
+        num_forcing_vars = len(ATM_FORCING_VARIABLES)
+        depth_dim = data_configs.depth_dim_name
 
         ds = xr.Dataset(
             coords={
                 "statistic": ["mean", "std"],
-                "level": ERA5_PRESSURE_LEVELS,
+                depth_dim: data_configs.depth_levels,
             },
         )
 
         # Surface variables
         for i in range(num_surface_vars):
-            ds[ERA5_SURFACE_VARIABLES[i]] = xr.DataArray(
+            ds[SURFACE_VARIABLES[i]] = xr.DataArray(
                 data=np.array([means[i], stds[i]]),
                 coords={
                     "statistic": ["mean", "std"],
                 },
             )
 
-        # Atmospheric variables
-        for i in range(num_atmospheric_vars):
+        # Ocean variables
+        for i in range(num_ocean_vars):
             offset_idx = num_surface_vars + i * num_levels
-            var_name = ERA5_ATMOSPHERIC_VARIABLES[i]
+            var_name = OCEAN_VARIABLES[i]
             ds[var_name] = xr.DataArray(
                 data=np.stack(
                     [
@@ -144,30 +185,36 @@ def compute_statistics(config):
                 ),
                 coords={
                     "statistic": ["mean", "std"],
-                    "level": ERA5_PRESSURE_LEVELS,
+                    depth_dim: data_configs.depth_levels,
                 },
             )
 
-        # Context variables
-        for i in range(num_context_vars):
-            offset_idx = num_surface_vars + num_atmospheric_vars * num_levels + i
-            ds[CONTEXT_VARIABLES[i]] = xr.DataArray(
+        # Forcing variables
+        for i in range(num_forcing_vars):
+            offset_idx = num_surface_vars + num_ocean_vars * num_levels + i
+            ds[ATM_FORCING_VARIABLES[i]] = xr.DataArray(
                 data=np.array([means[offset_idx], stds[offset_idx]]),
                 coords={
                     "statistic": ["mean", "std"],
                 },
             )
 
+        if output_suffix == ".nc":
+            ds.to_netcdf(output_path, mode="w")
+        else:
+            ds.to_zarr(output_path, mode="w", consolidated=True)
+
         shutil.rmtree(tmp_path, ignore_errors=True)
 
-        ds.to_zarr(output_path, mode="w", consolidated=True)
+    options = {"export": "ALL"}
+    if config.hardware.get("account") is not None:
+        options["account"] = config.hardware["account"]
 
     schedule(
         aggregate,
-        name="appa2 era5 stats",
-        export="ALL",
-        account=config.hardware.account,
+        name="appa2 train stats",
         backend="slurm",
+        **options
     )
 
 
@@ -178,8 +225,5 @@ if __name__ == "__main__":
 
     if "id" not in config:
         config["id"] = wandb.util.generate_id()
-
-    if config.data_path == "era5":
-        config.data_path = PATH_ERA5
 
     compute_statistics(config)
