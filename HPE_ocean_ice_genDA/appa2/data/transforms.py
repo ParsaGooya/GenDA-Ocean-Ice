@@ -15,7 +15,7 @@ class StandardizeTransform:
         path: NetCDF file or Zarr store containing mean and standard deviation statistics.
             Zarr stores are detected by a .zarr suffix or local store metadata.
         state_variables: Variables present in the non-standardized dataset for the state. if None, all variables are used.
-        context_variables: Variables present in the non-standardized dataset for the context. If None, no context is used.
+        forcing_variables: Variables present in the non-standardized dataset for the forcing. If None, no forcing is used.
         depths: Depths to select from the dataset. If None, all depths are used.
         depth_dim_name: Name of the depth coordinate.
     """
@@ -24,7 +24,7 @@ class StandardizeTransform:
         self,
         path: str | Path,
         state_variables: Optional[Sequence[str]] = None,
-        context_variables: Optional[Sequence[str]] = None,
+        forcing_variables: Optional[Sequence[str]] = None,
         depths: Optional[Sequence[str]] = None,
         depth_dim_name: Optional[str] = 'depth'
     ):
@@ -34,13 +34,13 @@ class StandardizeTransform:
                 stats = stats.sel(**{depth_dim_name:depths})
 
             self.state_mean, self.state_std = self._stats_to_tensor(stats, state_variables)
-            if context_variables is not None:
-                self.context_mean, self.context_std = self._stats_to_tensor(
-                    stats, context_variables
+            if forcing_variables is not None:
+                self.forcing_mean, self.forcing_std = self._stats_to_tensor(
+                    stats, forcing_variables
                 )
             else:
-                self.context_mean = None
-                self.context_std = None
+                self.forcing_mean = None
+                self.forcing_std = None
 
     @staticmethod
     def _open_stats(path: str | Path) -> xr.Dataset:
@@ -79,34 +79,34 @@ class StandardizeTransform:
 
         return stats_tensor[:, :, 0], stats_tensor[:, :, 1]
 
-    def __call__(self, state: Tensor, context: Tensor) -> Tensor:
+    def __call__(self, state: Tensor, forcing: Optional[Tensor] = None) -> tuple[Tensor, Optional[Tensor]]:
         r"""Applies standardization to the input tensor.
 
         Args:
             state: Input tensor representing the state, of shape :math:`(T, Z, Lat, Lon)`.
-            context: Input tensor representing the context, of shape :math:`(T, Z, Lat, Lon)`.
+            forcing: Input tensor representing the forcing, of shape :math:`(T, Z, Lat, Lon)`.
 
         Returns:
-            A tuple of tensors representing the standardized state and context, both of shape :math:`(T, Z, Lat, Lon)`.
+            A tuple of tensors representing the standardized state and forcing, both of shape :math:`(T, Z, Lat, Lon)`.
         """
         state = (state - self.state_mean) / self.state_std
-        if self.context_mean is not None:
-            context = (context - self.context_mean) / self.context_std
+        if forcing is not None and self.forcing_mean is not None:
+            forcing = (forcing - self.forcing_mean) / self.forcing_std
 
-        return state, context
+        return state, forcing
 
-    def unstandardize(self, state: Tensor, context: Tensor = None) -> Tensor:
+    def unstandardize(self, state: Tensor, forcing: Optional[Tensor] = None) -> tuple[Tensor, Optional[Tensor]]:
         r"""Applies unstandardization to the input tensor.
 
         Args:
             state: Input tensor representing the state, of shape :math:`(T, Z, Lat, Lon)`.
-            context: Input tensor representing the context, of shape :math:`(T, Z, Lat, Lon)`.
+            forcing: Input tensor representing the forcing, of shape :math:`(T, Z, Lat, Lon)`.
 
         Returns:
-            A tuple of tensors representing the unstandardized state and context, both of shape :math:`(T, Z, Lat, Lon)`.
+            A tuple of tensors representing the unstandardized state and forcing, both of shape :math:`(T, Z, Lat, Lon)`.
         """
         state = (state * self.state_std) + self.state_mean
-        if context is not None and self.context_mean is not None:
-            context = (context * self.context_std) + self.context_mean
+        if forcing is not None and self.forcing_mean is not None:
+            forcing = (forcing * self.forcing_std) + self.forcing_mean
 
-        return state, context
+        return state, forcing
