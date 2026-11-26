@@ -228,8 +228,7 @@ class GlorysDataset(Dataset):
     depth in variable order. Forcing retains its own native spatial grid. Context
     shares the ocean grid. Time contains (year, month, day, hour=0).
 
-    transform accepts/returns (state, context); forcing_transform independently
-    transforms forcing. NaNs are filled after transforms when fill_nans=True.
+    transform accepts/returns (state, forcing); NaNs are filled after transforms when fill_nans=True.
     trajectory_size and trajectory_dt specify sample length and daily stride;
     num_samples selects evenly spaced valid starts. depths selects exact levels.
     max_open_files bounds the lazy file-handle cache separately in each worker.
@@ -261,7 +260,6 @@ class GlorysDataset(Dataset):
         depth_path: Optional[NetCDFSource] = None, 
         forcing_path: Optional[NetCDFSource] = None,
         context_path: Optional[NetCDFSource] = None,
-        forcing_transform: Optional[Callable[[Tensor], Tensor]] = None,
         max_open_files: int = 16,
     ) -> None:
         """Scan metadata, validate coverage/grids, and construct trajectory starts."""
@@ -283,7 +281,6 @@ class GlorysDataset(Dataset):
         self.trajectory_dt = trajectory_dt
         self.depths = None if depths is None else list(depths)
         self.transform = transform
-        self.forcing_transform = forcing_transform
         self.fill_nans = fill_nans
         self.max_open_files = max_open_files
         self._files: OrderedDict[str, xr.Dataset] = OrderedDict()
@@ -479,17 +476,15 @@ class GlorysDataset(Dataset):
         dates = self.dates[start:start + self.trajectory_size * self.trajectory_dt:self.trajectory_dt]
         state = self._load_variables(self.state_variables, dates, self._ocean_coords)
         context = self._load_variables(self.context_variables, dates, self._ocean_coords)
+        forcing = self._load_variables(self.forcing_variables, dates, self._forcing_coords)
         time = torch.stack([get_date_features(date) for date in dates])
         if self.transform is not None:
-            state, context = self.transform(state, context)
+            state, forcing = self.transform(state, forcing)
         if self.fill_nans:
             state = torch.nan_to_num(state, nan=DATA_NAN_VALUE)
             context = torch.nan_to_num(context, nan=DATA_NAN_VALUE)
         if not self.forcing_variables:
             return state, context, time
-        forcing = self._load_variables(self.forcing_variables, dates, self._forcing_coords)
-        if self.forcing_transform is not None:
-            forcing = self.forcing_transform(forcing)
         if self.fill_nans:
             forcing = torch.nan_to_num(forcing, nan=DATA_NAN_VALUE)
         return state, context, time, forcing
