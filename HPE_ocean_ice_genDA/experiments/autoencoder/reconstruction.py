@@ -80,19 +80,10 @@ def evaluate_chunk(config, train_config, specs, model_path, interval, shard_path
     standardize = StandardizeTransform(
         config.get("state_stats_path") or specs.path_stat_state,
         state_variables=STATE_VARIABLES,
-        context_variables=CONTEXT_VARIABLES or None,
+        forcing_variables=forcing_variables if len(forcing_variables)>0 else None,
         depths=specs.depth_levels,
         depth_dim_name=specs.depth_dim_name,
     )
-    forcing_transform = None
-    if has_forcing:
-        forcing_stats = StandardizeTransform(
-            config.get("forcing_stats_path") or specs.path_stat_forcing,
-            state_variables=forcing_variables,
-        )
-
-        def forcing_transform(forcing):
-            return forcing_stats(forcing, None)[0]
 
     dataset = specs.dataset(
         state_variables_path=specs.state_variables_path,
@@ -106,7 +97,6 @@ def evaluate_chunk(config, train_config, specs, model_path, interval, shard_path
         forcing_path=config.get("forcing_path") or specs.forcing_path,
         depths=specs.depth_levels,
         transform=standardize,
-        forcing_transform=forcing_transform,
         fill_nans=False,
     )
     loader = get_dataloader(

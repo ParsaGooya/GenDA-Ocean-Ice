@@ -26,8 +26,7 @@ fastest, matching `create_glorys()` node order when coordinate values/order agre
 | `context_variables` | `list[str]` | Ordered ocean-context names, returned separately from state. |
 | `variables_to_load_from_shared_path` | `list[str]` | Records variables whose group path was omitted and therefore uses `state_variables_path`. Routing bookkeeping, not a second temporal index. |
 | `depths` | `list[float]` or `None` | Exact depth coordinates to select; `None` retains all available depths. |
-| `transform` | callable or `None` | Processes and returns `(state, context)` after loading and before missing-value filling. |
-| `forcing_transform` | callable or `None` | Independently processes the forcing tensor before missing-value filling. |
+| `transform` | callable or `None` | Accepts and returns `(state, forcing)` before missing-value filling. When forcing is disabled, the callable receives a zero-channel forcing tensor. |
 | `fill_nans` | `bool` | Enables `torch.nan_to_num` on output fields after transforms, replacing NaNs with `DATA_NAN_VALUE`; infinities also follow PyTorch's default replacement behavior. |
 | `_files` | `OrderedDict[str, xr.Dataset]` | Process-local cache of open lazy datasets, ordered from least to most recently used. Caches handles rather than full annual arrays. |
 | `max_open_files` | `int` | Maximum number of cached file entries per process; older entries are closed and evicted when exceeded. |

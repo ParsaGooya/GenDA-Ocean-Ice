@@ -99,19 +99,10 @@ def train(
     st_state = StandardizeTransform(
         data_configs.path_stat_state,
         state_variables=STATE_VARIABLES,
-        context_variables=CONTEXT_VARIABLES if len(CONTEXT_VARIABLES)>0 else None,
+        forcing_variables=FORCING_VARIABLES if len(FORCING_VARIABLES)>0 else None,
         depths=data_configs.depth_levels,
         depth_dim_name=data_configs.depth_dim_name
     )
-
-    if has_forcing:
-        forcing_stats = StandardizeTransform(
-            data_configs.path_stat_forcing,
-            state_variables=FORCING_VARIABLES,
-        )
-
-        def forcing_transform(forcing):
-            return forcing_stats(forcing, None)[0]
 
     fill_nans = cfg.train.get("fill_nans", False)
     datasets = [
@@ -127,7 +118,6 @@ def train(
             forcing_variables= FORCING_VARIABLES,
             context_variables= CONTEXT_VARIABLES,
             forcing_path = data_configs.forcing_path,
-            forcing_transform=forcing_transform if has_forcing else None,
             depths=data_configs.depth_levels,
             fill_nans=fill_nans,
         )
