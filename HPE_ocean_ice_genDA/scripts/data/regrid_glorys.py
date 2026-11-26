@@ -265,13 +265,14 @@ if __name__ == "__main__":
     local_length_scale_variable = "length_scale"  # 2D, in meters
     subsample_stride = 3  # Native grid intervals per output grid interval.
     time_batch_size = 7  # Daily records per filtering batch.
+    max_concurrent_jobs: int | None = 2  # None leaves scheduling concurrency to Slurm.
     MIN_LAT: float | None = 25.0
 
 
     hardware = {
         "backend": "slurm",  # or async
         "job":
-            {"cpus": 4,
+            {"cpus": 8,
             "ram": "64GB",
             "time": "12:00:00",
             "partition": "parry",}
@@ -300,6 +301,9 @@ if __name__ == "__main__":
         year = source.name.split("_")[3][:4]
         sources_by_year[year].append(source)
 
+    if max_concurrent_jobs is not None and max_concurrent_jobs < 1:
+        raise ValueError("max_concurrent_jobs must be positive or None.")
+
     jobs = []
 
     for year, year_sources in sorted(sources_by_year.items()):
@@ -325,8 +329,8 @@ if __name__ == "__main__":
             name=f"glorys_regrid_{year}",
             **hardware["job"],
         )
-        if jobs:
-            year_job = after(jobs[-1], status="any")(year_job)
+        if max_concurrent_jobs is not None and len(jobs) >= max_concurrent_jobs:
+            year_job = after(jobs[-max_concurrent_jobs], status="any")(year_job)
         jobs.append(year_job)
 
     options = {"export": "ALL"}
