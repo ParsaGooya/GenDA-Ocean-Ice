@@ -9,7 +9,7 @@ from typing import Final, Optional, Sequence, Literal
 
 
 
-SUPPORTED_GRIDS = Literal["n_320", "glorys", "riops"]
+SUPPORTED_GRIDS = Literal["n_320", "glorys", "glorys_25", "era5", "riops"]
 POLAR_GRIDS = Literal["riops"]
 GLORYS_MIN_LAT: Final[float] = 24.5
 
@@ -227,8 +227,12 @@ def create_original_grid(
             coord = create_N320()
         elif grid_name == "glorys":
             coord = create_glorys(GLORYS_MIN_LAT)
+        elif grid_name == "glorys_25":
+            coord = create_glorys(GLORYS_MIN_LAT)
+        elif grid_name == "era5":
+            coord = create_glorys(GLORYS_MIN_LAT)
         elif grid_name == "riops":
-            coord = create_ORG(80)
+            raise NotImplementedError()
         else:
             raise ValueError(
                 f"Unsupported grid {grid_name}. Supported grids are 'N_320', 'glorys', 'riops'."
