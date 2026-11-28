@@ -12,6 +12,8 @@ from typing import Final, Optional, Sequence, Literal
 SUPPORTED_GRIDS = Literal["n_320", "glorys", "glorys_25", "era5", "riops"]
 POLAR_GRIDS = Literal["riops"]
 GLORYS_MIN_LAT: Final[float] = 24.5
+GLORYS_25_MIN_LAT: Final[float] = 25
+ERA5_MIN_LAT: Final[float] = 24.5
 
 def latlon_to_xyz(grid: Tensor) -> Tensor:
     r"""Converts a latitude-longitude grid to 3D cartesian coordinates.
@@ -196,7 +198,7 @@ def create_N320() -> Tensor:
     r"""Creates the N320 reduced Gaussian grid.
 
     Returns:
-        The N320 vertices, with shape :math:`(721 \times 1440, 2)`. A point is a latitude-longitude pair.
+        The N320 vertices, with shape :math:(721 \times 1440, 2). A point is a latitude-longitude pair.
     """
 
     lat = torch.linspace(90, -90, 721)
@@ -206,15 +208,35 @@ def create_N320() -> Tensor:
 
     return coord
 
+def create_era5_025(min_lat: float = -90.0) -> Tensor:
+    """Create regular ERA5 0.25° vertices at or north of min_lat.
 
-def create_glorys(min_lat: float = GLORYS_MIN_LAT) -> Tensor:
-    """Create GLORYS vertices ordered by ascending latitude."""
+    Latitude increases from south to north, and longitude increases from
+    -180° to 179.75° within each latitude row.
+    """
+    if not -90 <= min_lat <= 90:
+        raise ValueError("min_lat must be between -90 and 90 degrees.")
+
+    lat = torch.linspace(-90, 90, 721)
+    lat = lat[lat >= min_lat]
+    lon = torch.linspace(-180, 179.75, 1440)
+
+    return torch.cartesian_prod(lat, lon)
+
+
+def create_glorys(
+    min_lat: float = GLORYS_MIN_LAT,
+    subsample: int = 1,
+) -> Tensor:
+    """Create GLORYS vertices in ascending latitude with the given grid stride."""
     if not -80 <= min_lat <= 90:
         raise ValueError("min_lat must be between -80 and 90 degrees.")
+    if isinstance(subsample, bool) or not isinstance(subsample, int) or subsample < 1:
+        raise ValueError("subsample must be a positive integer.")
 
-    lat = -80 + torch.arange(2041, dtype=torch.float64) / 12
+    lat = -80 + torch.arange(0, 2041, subsample, dtype=torch.float64) / 12
     lat = lat[lat >= min_lat]
-    lon = -180 + torch.arange(4320, dtype=torch.float64) / 12
+    lon = -180 + torch.arange(0, 4320, subsample, dtype=torch.float64) / 12
 
     return torch.cartesian_prod(lat, lon).float()
 
@@ -228,9 +250,9 @@ def create_original_grid(
         elif grid_name == "glorys":
             coord = create_glorys(GLORYS_MIN_LAT)
         elif grid_name == "glorys_25":
-            coord = create_glorys(GLORYS_MIN_LAT)
+            coord = create_glorys(GLORYS_25_MIN_LAT, subsample=3)
         elif grid_name == "era5":
-            coord = create_glorys(GLORYS_MIN_LAT)
+            coord = create_era5_025(ERA5_MIN_LAT)
         elif grid_name == "riops":
             raise NotImplementedError()
         else:
