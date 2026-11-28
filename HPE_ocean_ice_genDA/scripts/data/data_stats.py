@@ -249,7 +249,7 @@ def compute_statistics(config):
 
 
 if __name__ == "__main__":
-    config = compose("configs/data_stats.yaml", overrides=sys.argv[1:])
+    config = compose("./scripts/data/configs/data_stats.yaml", overrides=sys.argv[1:])
     OmegaConf.set_readonly(config, False)
     OmegaConf.set_struct(config, False)
 

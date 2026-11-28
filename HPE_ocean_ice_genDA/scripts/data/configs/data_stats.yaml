@@ -1,5 +1,5 @@
 state_grid: glorys
-ae_config_path: null  # Defaults to the checked-in ico7to5 GAE configuration
+ae_config_path: /home/users/e45119/GenDA/HPE_ocean_ice_genDA/experiments/autoencoder/configs/ae/ico7to5.yaml  # Defaults to the checked-in ico7to5 GAE configuration
 output_path: /lus/scratch/PGooya/data/glorys/stats/state_forcing_stats.nc  # .nc for NetCDF, .zarr or no suffix for Zarr
 
 start_date: null
@@ -12,16 +12,15 @@ log_every: 1
 
 hardware:
   backend: slurm  # or async
-  account: users
   chunk:
-    cpus: 8
+    cpus: 60
     ram: 60GB
-    time: "2-00:00:00"
+    time: "12:00:00"
     gpus: 1
-    partition: gpu
+    partition: "parry"
   aggregate:
-    cpus: 8
+    cpus: 60
     ram: 60GB
-    time: "10:00"
-    partition: gpu
+    time: "12:00:00"
+    partition: "parry"
     gpus: 1
