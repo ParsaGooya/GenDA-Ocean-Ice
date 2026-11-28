@@ -13,7 +13,8 @@ pooling_area: [2, 2, 2]
 forcing_pooling_area: [2,2,2]
 
 polar_cap_filter_longitude_bands: [-100, 100]
-polar_cap_filter_min_latitudes: [25,43]
+# Dateline-wrapping band first, then the band from 100°W to 100°E.
+polar_cap_filter_min_latitudes: [43, 25]
 
 checkpointing: true
 identity_init: false
