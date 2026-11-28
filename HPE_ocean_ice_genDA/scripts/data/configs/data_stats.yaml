@@ -1,4 +1,5 @@
 state_grid: glorys
+ae_config_path: null  # Defaults to the checked-in ico7to5 GAE configuration
 output_path: /lus/scratch/PGooya/data/glorys/stats/state_forcing_stats.nc  # .nc for NetCDF, .zarr or no suffix for Zarr
 
 start_date: null

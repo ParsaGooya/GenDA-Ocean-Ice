@@ -23,12 +23,22 @@ from appa2.data.const import (
 from appa2.data.dataloaders import get_dataloader
 from appa2.data.data_config import get_dataset_specs
 from appa2.date import split_daily_interval
+from appa2.grid import PolarCapFilter
 
 
-def channel_moments(values):
+def polar_grid_mask(coords, polar_filter):
+    """Evaluate the GAE filter in the dataset's latitude-longitude order."""
+    latitude = torch.as_tensor(coords["latitude"], dtype=torch.float32)
+    longitude = torch.as_tensor(coords["longitude"], dtype=torch.float32)
+    vertices = torch.cartesian_prod(latitude, longitude)
+    return polar_filter(vertices).reshape(latitude.numel(), longitude.numel())
+
+
+def channel_moments(values, grid_mask=None):
     """Return finite counts, sums, and squared sums for each channel."""
-    values = values.cuda()
     finite = torch.isfinite(values)
+    if grid_mask is not None:
+        finite &= grid_mask
     values = torch.where(finite, values, 0).double()
     sample_dims = (0, 1, 3, 4)  # Batch, trajectory, latitude, longitude
     return (
@@ -41,6 +51,20 @@ def channel_moments(values):
 def compute_statistics(config):
     num_chunks = config.num_chunks
     data_configs = get_dataset_specs(config.state_grid)
+    ae_config_path = config.get("ae_config_path") or (
+        Path(__file__).resolve().parents[2]
+        / "experiments/autoencoder/configs/ae/ico7to5.yaml"
+    )
+    ae_config = OmegaConf.load(ae_config_path)
+    longitude_bands = ae_config.get("polar_cap_filter_longitude_bands")
+    min_latitudes = ae_config.get("polar_cap_filter_min_latitudes")
+    if (longitude_bands is None) != (min_latitudes is None):
+        raise ValueError("Both GAE polar-cap settings must be supplied together.")
+    polar_filter = (
+        PolarCapFilter(longitude_bands, min_latitudes)
+        if longitude_bands is not None
+        else None
+    )
     output_path = Path(config.get("output_path") or data_configs.path_stat_state)
     output_suffix = output_path.suffix.lower()
     if output_suffix not in {"", ".nc", ".zarr"}:
@@ -90,6 +114,11 @@ def compute_statistics(config):
             shuffle=False,
         )
 
+        state_mask = forcing_mask = None
+        if polar_filter is not None:
+            state_mask = polar_grid_mask(dataset._ocean_coords, polar_filter).cuda()
+            forcing_mask = polar_grid_mask(dataset._forcing_coords, polar_filter).cuda()
+
         len_dl = len(dataloader)
 
         num_channels = (
@@ -103,8 +132,8 @@ def compute_statistics(config):
         start_time = time.time()
 
         for idx, (data, _, _, forcing) in enumerate(dataloader):
-            state_moments = channel_moments(data)
-            forcing_moments = channel_moments(forcing)
+            state_moments = channel_moments(data.cuda(), state_mask)
+            forcing_moments = channel_moments(forcing.cuda(), forcing_mask)
             counts, totals, squared_totals = (
                 torch.cat((state, atmosphere))
                 for state, atmosphere in zip(state_moments, forcing_moments)
