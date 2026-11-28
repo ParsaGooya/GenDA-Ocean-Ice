@@ -98,6 +98,10 @@ class PolarCapFilter:
     eastward to longitude_bands[i]. The first band wraps across
     the dateline.
 
+    For example, with longitude_bands=[-100, 100] and min_latitudes=[43, 25],
+    43°N applies from 100°E eastward across the dateline to 100°W.
+    25°N applies from 100°W eastward through 0° to 100°E.
+
     Longitude bands include their western boundary and exclude
     their eastern boundary. Latitude thresholds are inclusive.
     """
@@ -147,6 +151,7 @@ class PolarCapFilter:
         band = band % len(self.longitudes)
 
         return lat >= thresholds[band]
+
 
 
 def ORG_vertices_per_lat(latitude_idx: int) -> int:
