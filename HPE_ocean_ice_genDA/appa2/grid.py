@@ -10,7 +10,7 @@ from typing import Final, Optional, Sequence, Literal
 
 
 SUPPORTED_GRIDS = Literal["n_320", "glorys", "glorys_25", "era5", "riops"]
-POLAR_GRIDS = Literal["riops"]
+POLAR_GRIDS = Literal["riops", "glorys_25", "era5"]
 GLORYS_MIN_LAT: Final[float] = 24.5
 GLORYS_25_MIN_LAT: Final[float] = 25
 ERA5_MIN_LAT: Final[float] = 24.5

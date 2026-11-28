@@ -77,6 +77,7 @@ def compute_statistics(config):
             forcing_variables= ATM_FORCING_VARIABLES,
             context_variables= CONTEXT_VARIABLES,
             forcing_path = data_configs.forcing_path,
+            context_path=data_configs.context_path,
             depths=data_configs.depth_levels,
             fill_nans=False,
         )

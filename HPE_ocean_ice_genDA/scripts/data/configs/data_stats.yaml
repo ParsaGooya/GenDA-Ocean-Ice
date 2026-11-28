@@ -1,5 +1,5 @@
 state_grid: glorys
-output_path: null  # .nc for NetCDF, .zarr or no suffix for Zarr
+output_path: /lus/scratch/PGooya/data/glorys/stats/state_forcing_stats.nc  # .nc for NetCDF, .zarr or no suffix for Zarr
 
 start_date: null
 end_date: null

@@ -13,8 +13,9 @@ DATA = Path("/lus/scratch/PGooya/data")
 
 PATH_AE = PROJECT / "autoencoders"
 
-PATH_GLORYS = DATA / "glorys_daily"
-PATH_GLORYS_FORING = DATA / "glorys_daily"
+PATH_GLORYS = DATA / "glorys/glorys_daily_25"
+PATH_GLORYS_FORING = DATA / "era5/era5_daily_weatherbench2"
+PATH_GLORYS_CONTEXT = DATA / "glorys/static_25"
 
 PATH_GLORYS_STAT_FORCING = DATA / "glorys_daily" / "stats"
 PATH_GLORYS_STAT_STATE = DATA / "glorys_daily" / "stats"

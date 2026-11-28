@@ -95,6 +95,7 @@ def evaluate_chunk(config, train_config, specs, model_path, interval, shard_path
         context_variables=CONTEXT_VARIABLES,
         forcing_variables=forcing_variables,
         forcing_path=config.get("forcing_path") or specs.forcing_path,
+        context_path=specs.context_path,
         depths=specs.depth_levels,
         transform=standardize,
         fill_nans=False,

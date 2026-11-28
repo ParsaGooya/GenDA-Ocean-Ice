@@ -348,7 +348,7 @@ class GlorysDataset(Dataset):
         files: set[str] = set()
         for entry in entries:
             path = Path(entry)
-            files.update(str(p.resolve()) for p in (path.rglob('*.nc') if path.is_dir() else [path]))
+            files.update(str(p.resolve()) for p in (path.glob('*.nc') if path.is_dir() else [path]))
         if not files:
             raise ValueError(f"No NetCDF files found in {source!r}.")
         return sorted(files)

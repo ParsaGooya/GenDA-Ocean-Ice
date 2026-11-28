@@ -10,7 +10,7 @@ from appa2.config import (
     PATH_GLORYS_FORING,
     PATH_GLORYS_STAT_FORCING,
     PATH_GLORYS_STAT_STATE,
-    PATH_GLORYS_BATHYMETRY,
+    PATH_GLORYS_CONTEXT,
 )
 from appa2.grid import SUPPORTED_GRIDS
 from appa2.data.datasets import GlorysDataset, NetCDFSource
@@ -31,6 +31,7 @@ class dataset_config:
     surface_path: Optional[NetCDFSource] = None
     depth_path: Optional[NetCDFSource] = None
     forcing_path: Optional[NetCDFSource] = None
+    context_path: Optional[NetCDFSource] = None
     bathymetry_path: Optional[NetCDFSource] = None
     path_stat_state:  Optional[NetCDFSource] = None
     path_stat_forcing:  Optional[NetCDFSource] = None
@@ -76,6 +77,7 @@ def get_dataset_specs(starting_grid: SUPPORTED_GRIDS):
             rearange_protocol_inverse= "(B T) (Lat Lon) Z -> B T Z Lat Lon",
             # bathymetry_path=PATH_GLORYS_BATHYMETRY,
             forcing_path = PATH_GLORYS_FORING,
+            context_path = PATH_GLORYS_CONTEXT,
             path_stat_state = PATH_GLORYS_STAT_STATE,
             path_stat_forcing= PATH_GLORYS_STAT_FORCING,
             depth_dim_name=GLORYS_DEPTH_DIM,

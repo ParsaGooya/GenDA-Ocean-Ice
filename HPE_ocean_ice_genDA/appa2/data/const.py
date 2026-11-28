@@ -103,10 +103,11 @@ SURFACE_VARIABLES = [
 ]
 
 ATM_FORCING_VARIABLES = [
-    "2m_temperature",
-    "10m_u_component_of_wind",
-    "10m_v_component_of_wind",
-    "total_precipitation",
+    "t2m",
+    "q2m",
+    "u10",
+    "v10",
+    "tp"
 ]
 
 OCEAN_VARIABLES = [
@@ -118,13 +119,13 @@ OCEAN_VARIABLES = [
 
 STATE_VARIABLES = SURFACE_VARIABLES + OCEAN_VARIABLES
 
-CONTEXT_VARIABLES = [] #[
-#     "deptho",
-#     "land_sea_mask",
-#     # "distance_to_coast",
-#     # "eastward_bathymetric_gradient",
-#     # "northward_bathymetric_gradient",
-# ]
+CONTEXT_VARIABLES = [
+    "deptho",
+    "distance_to_shore",
+    "mask",
+    # "eastward_bathymetric_gradient",
+    # "northward_bathymetric_gradient",
+]
 
 # Corresponding atmospheric variables for surface variables
 ATM_SURF_VARIABLE_MAPPINGS = {
